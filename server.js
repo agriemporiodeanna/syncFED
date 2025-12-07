@@ -1,123 +1,89 @@
-// server.js
 import express from "express";
-import cors from "cors";
-import path from "path";
-import { fileURLToPath } from "url";
-
+import mysql from "./db.js";
 import { syncBman } from "./syncfed.js";
-import { pool } from "./db.js";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import fetch from "node-fetch";
+import fs from "fs";
+import path from "path";
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-
-// Middleware
-app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Static (dashboard)
-app.use(express.static(path.join(__dirname, "public")));
+// ====== 🔐 VARIABILI ENV DA RENDER ======
+const GITHUB_TOKEN = process.env.token_github;
+const GITHUB_REPO = "agriemporiodeanna/SyncFED";
 
-// Test base
-app.get("/test", (req, res) => {
-  res.send("✅ SyncFED attivo");
-});
-
-// 🔄 Sync manuale Bman → MySQL
-app.post("/sync", async (req, res) => {
-  try {
-    console.log("▶ Avvio sincronizzazione Bman → MySQL (richiesta manuale)...");
-    const result = await syncBman();
-    console.log("✅ Sincronizzazione completata:", result);
-
-    res.json({
-      ok: true,
-      message: "Sincronizzazione completata",
-      result,
-    });
-  } catch (err) {
-    console.error("❌ Errore nella sincronizzazione:", err);
-    res.status(500).json({
-      ok: false,
-      message: "Errore nella sincronizzazione",
-      error: err.message || String(err),
-    });
-  }
-});
-
-// 📋 Elenco articoli per dashboard
-app.get("/api/articoli", async (req, res) => {
-  try {
-    const [rows] = await pool.query(
-      `SELECT 
-         id,
-         codice,
-         marca,
-         titolo,
-         prezzo,
-         iva,
-         categorie,
-         tags,
-         giacenza,
-         ottimizzazione_approvata
-       FROM prodotti
-       ORDER BY id DESC
-       LIMIT 500`
-    );
-
-    res.json({ ok: true, articoli: rows });
-  } catch (err) {
-    console.error("❌ Errore lettura articoli:", err);
-    res.status(500).json({
-      ok: false,
-      message: "Errore lettura articoli",
-      error: err.message || String(err),
-    });
-  }
-});
-
-// ✅ Pulsante "Approva ottimizzazione" (articolo per articolo)
-app.post("/api/articoli/:id/approva", async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    const [result] = await pool.query(
-      `UPDATE prodotti 
-       SET ottimizzazione_approvata = 'si'
-       WHERE id = ?`,
-      [id]
-    );
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({
-        ok: false,
-        message: "Articolo non trovato",
-      });
-    }
-
-    res.json({
-      ok: true,
-      message: "Ottimizzazione approvata per questo articolo",
-    });
-  } catch (err) {
-    console.error("❌ Errore aggiornando ottimizzazione_approvata:", err);
-    res.status(500).json({
-      ok: false,
-      message: "Errore aggiornando l'articolo",
-      error: err.message || String(err),
-    });
-  }
-});
-
-// Dashboard di default
+// ====== 🏁 HOME ======
 app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "dashboard.html"));
+  res.send(`<h1>🤖 SyncFED Online</h1><p>Server attivo!</p>`);
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 Server avviato su porta ${PORT}`);
+// ====== 🛠 TEST SCRITTURA SU GITHUB ======
+app.get("/testgithub", async (req, res) => {
+  try {
+    const content = Buffer.from("SyncFED test success " + new Date()).toString("base64");
+
+    const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/contents/test_syncfed.txt`, {
+      method: "PUT",
+      headers: {
+        "Authorization": `Bearer ${GITHUB_TOKEN}`,
+        "Content-Type": "application/json",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "SyncFED"
+      },
+      body: JSON.stringify({
+        message: "Test automatico SyncFED",
+        content
+      })
+    });
+
+    if (!response.ok) throw new Error("GitHub error: " + response.status);
+    res.json({ status: "ok", message: "✔ Test completato: file caricato su GitHub." });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ status: "error", message: error.toString() });
+  }
 });
+
+// ====== ▶ AVVIO SINCRONIZZAZIONE MANUALE ======
+app.get("/sync", async (req, res) => {
+  try {
+    await syncBman();
+    res.send("✔ Sincronizzazione completata");
+  } catch (error) {
+    res.status(500).send("❌ Errore sincronizzazione: " + error.toString());
+  }
+});
+
+// ====== 📌 API LISTA ARTICOLI (VEDI SOLO NON APPROVATI SE RICHIESTO) ======
+app.get("/articoli", async (req, res) => {
+  try {
+    const show = req.query.type || "all"; // all oppure non-approvati
+
+    let query = "SELECT * FROM articoli";
+    if (show === "non-approvati") query += " WHERE ottimizzazione <> 'si'";
+
+    const [rows] = await mysql.query(query);
+    res.json(rows);
+  } catch (err) {
+    res.status(500).send("❌ Errore caricamento articoli");
+  }
+});
+
+// ====== 🆗 APPROVAZIONE ARTICOLO MANUALE ======
+app.post("/approva/:id", async (req, res) => {
+  try {
+    await mysql.query("UPDATE articoli SET ottimizzazione = 'si' WHERE id = ?", [req.params.id]);
+    res.json({ status: "ok", message: "✔ Articolo approvato" });
+  } catch (err) {
+    res.status(500).json({ status: "error", message: err.toString() });
+  }
+});
+
+// ====== 🚀 START SERVER ======
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`🔥 SyncFED server attivo su porta ${PORT} `));
+
+
 
