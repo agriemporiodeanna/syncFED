@@ -1,8 +1,11 @@
-import mysql from "mysql2/promise";
-import dotenv from "dotenv";
-dotenv.config();
+// =========================
+// 🗃️ DATABASE MYSQL POOL
+// =========================
 
-export const pool = mysql.createPool({
+const mysql = require("mysql2/promise");
+require("dotenv").config();
+
+const pool = mysql.createPool({
   host: process.env.MYSQL_HOST,
   user: process.env.MYSQL_USER,
   password: process.env.MYSQL_PASS,
@@ -11,6 +14,13 @@ export const pool = mysql.createPool({
   connectionLimit: 10,
   queueLimit: 0,
   ssl: {
-    rejectUnauthorized: false
+    rejectUnauthorized: false // ✔ Aruba compatibile
   }
 });
+
+async function query(sql, params) {
+  const [rows] = await pool.execute(sql, params);
+  return rows;
+}
+
+module.exports = { pool, query };
