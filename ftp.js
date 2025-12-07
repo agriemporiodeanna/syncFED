@@ -1,36 +1,36 @@
-// =========================
-// 📤 FTP UPLOAD FILE (ARUBA)
-// =========================
+// ftp.js
+import ftp from "basic-ftp";
+import fs from "fs";
 
-const { Client } = require("basic-ftp");
-require("dotenv").config();
+export async function uploadImage(localPath, remoteName) {
+  const client = new ftp.Client();
+  client.ftp.verbose = false;
 
-async function uploadToFTP(buffer, remoteName) {
-  const client = new Client();
   try {
     await client.access({
       host: process.env.FTP_HOST,
       user: process.env.FTP_USER,
       password: process.env.FTP_PASS,
-      secure: false,
-      port: 21
+      secure: false
     });
 
-    // 📁 Crea cartella se non esiste
-    await client.ensureDir(process.env.FTP_DIR);
+    // Carica nella cartella IMMAGINI/ se non esiste creala
+    try {
+      await client.ensureDir("IMMAGINI");
+    } catch (err) {
+      console.log("⚠️ Cartella IMMAGINI già presente");
+    }
 
-    // ⬆ Carica il file
-    await client.uploadFrom(buffer, `${process.env.FTP_DIR}/${remoteName}`);
+    await client.uploadFrom(localPath, `IMMAGINI/${remoteName}`);
+    console.log(`📤 Caricata immagine: ${remoteName}`);
+    return true;
 
-    // 🔗 Restituisce URL pubblico HTTP
-    return `${process.env.FTP_HTTP}/${remoteName}`;
   } catch (err) {
-    console.error("❌ Errore upload FTP:", err);
-    throw err;
+    console.error("❌ Errore FTP:", err);
+    return false;
+
   } finally {
     client.close();
   }
 }
-
-module.exports = { uploadToFTP };
 
