@@ -5,7 +5,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const bmanURL = `https://${process.env.BMAN_DOMAIN}:3555/bmanapi.asmx`;
-const https = require("https");
+import https from "https";
 const agent = new https.Agent({ rejectUnauthorized: false });
 
 // 🧠 Estrai solo la descrizione IT
@@ -13,70 +13,57 @@ function estraiDescIT(html) {
   if (!html) return "";
   let text = html
     .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/?[^>]+(>|$)/g, "") // rimuove tutti gli HTML
+    .replace(/<\/?[^>]+(>|$)/g, "")
     .trim();
 
-  // Taglia a IT cancellando FR ES DE
-  const patterns = ["FR:", "ES:", "DE:"];
-  patterns.forEach(lang => {
+  ["FR:", "ES:", "DE:"].forEach(lang => {
     const idx = text.indexOf(lang);
     if (idx !== -1) text = text.substring(0, idx).trim();
   });
-
   return text;
 }
 
-// 🌍 Costruisci multilingua testo puro
+// 🌍 costruisci multilingua
 function estraiMultilingua(html) {
   if (!html) return "";
-
   let text = html
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/?[^>]+(>|$)/g, "")
     .trim();
 
   let out = [];
+  let langs = ["IT:", "FR:", "ES:", "DE:"];
 
-  const langMap = {
-    "IT:": "IT:",
-    "FR:": "FR:",
-    "ES:": "ES:",
-    "DE:": "DE:"
-  };
-
-  Object.keys(langMap).forEach(lang => {
-    let idx = text.indexOf(lang);
-    if (idx !== -1) {
-      let sub = text.substring(idx);
-      let nextIdx = Object.keys(langMap)
-        .map(k => text.indexOf(k))
-        .filter(i => i > idx)
+  langs.forEach((lang, idx) => {
+    let start = text.indexOf(lang);
+    if (start !== -1) {
+      let end = langs
+        .map(l => text.indexOf(l))
+        .filter(i => i > start)
         .sort((a, b) => a - b)[0];
 
-      sub = nextIdx ? text.substring(idx, nextIdx) : text.substring(idx);
-      out.push(sub.trim());
+      out.push(text.substring(start, end || text.length).trim());
     }
   });
 
   return out.join("\n\n");
 }
 
-// 💵 Trova prezzo negozio
+// 💰 prezzo negozio
 function trovaPrezzoNegozio(arrSconti) {
   if (!arrSconti) return null;
   for (const s of arrSconti) {
-    if (
-      s.Etichetta?.toLowerCase().includes("negozio") ||
-      s.NomeCompleto?.toLowerCase().includes("negozio")
-    ) {
+    if (typeof s.Etichetta === "string" && s.Etichetta.toLowerCase().includes("negozio")) {
+      return Number(s.prezzo).toFixed(2);
+    }
+    if (typeof s.NomeCompleto === "string" && s.NomeCompleto.toLowerCase().includes("negozio")) {
       return Number(s.prezzo).toFixed(2);
     }
   }
-  // fallback
   return arrSconti[0]?.prezzo ? Number(arrSconti[0].prezzo).toFixed(2) : null;
 }
 
-// 📦 Chiamata SOAP → Bman getAnagrafiche
+// 📦 scarica pagina articoli BMAN
 async function scaricaArticoliBman(pagina = 1) {
   const soapEnvelope = `
   <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -98,10 +85,7 @@ async function scaricaArticoliBman(pagina = 1) {
   const response = await axios.post(
     bmanURL,
     soapEnvelope,
-    {
-      httpsAgent: agent,
-      headers: { "Content-Type": "text/xml;charset=UTF-8" }
-    }
+    { httpsAgent: agent, headers: { "Content-Type": "text/xml;charset=UTF-8" } }
   );
 
   const xml = await parseStringPromise(response.data, { explicitArray: false });
@@ -109,31 +93,22 @@ async function scaricaArticoliBman(pagina = 1) {
 
   try {
     return JSON.parse(result);
-  } catch (e) {
+  } catch {
     return [];
   }
 }
 
-// 💾 Salvataggio nel DB
+// 💾 salva in DB
 async function salvaProdottoDB(prod) {
-  const [r] = await pool.query(
+  await pool.query(
     `INSERT INTO prodotti
      (id_bman, codice, marca, titolo, descrizione_it, descrizione_html, prezzo, iva, tag, categoria1, categoria2, giacenza, img_link, img_local)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
-     marca = VALUES(marca),
-     titolo = VALUES(titolo),
-     descrizione_it = VALUES(descrizione_it),
-     descrizione_html = VALUES(descrizione_html),
-     prezzo = VALUES(prezzo),
-     iva = VALUES(iva),
-     tag = VALUES(tag),
-     categoria1 = VALUES(categoria1),
-     categoria2 = VALUES(categoria2),
-     giacenza = VALUES(giacenza),
-     img_link = VALUES(img_link),
-     img_local = VALUES(img_local),
-     data_sync = CURRENT_TIMESTAMP;`,
+     marca=VALUES(marca), titolo=VALUES(titolo), descrizione_it=VALUES(descrizione_it),
+     descrizione_html=VALUES(descrizione_html), prezzo=VALUES(prezzo), iva=VALUES(iva),
+     tag=VALUES(tag), categoria1=VALUES(categoria1), categoria2=VALUES(categoria2),
+     giacenza=VALUES(giacenza), img_link=VALUES(img_link), data_sync=CURRENT_TIMESTAMP`,
     [
       prod.ID,
       prod.codice,
@@ -148,31 +123,29 @@ async function salvaProdottoDB(prod) {
       prod.categoria2str || "",
       prod.disponibilita || 0,
       prod.arrFoto?.[0] || "",
-      null // img_local riempito poi dal modulo immagini
+      null
     ]
   );
-  return r;
 }
 
-// 🚀 Funzione principale sync
+// 🚀 sync principale
 export async function syncBman() {
   console.log("🔁 Avvio sincronizzazione Bman...");
 
   let pagina = 1;
-  let totaleScaricati = 0;
+  let totale = 0;
 
   while (true) {
     const articoli = await scaricaArticoliBman(pagina);
     if (!articoli || articoli.length === 0) break;
-
     for (const a of articoli) {
       await salvaProdottoDB(a);
-      totaleScaricati++;
+      totale++;
     }
-
     pagina++;
   }
 
-  console.log(`🎉 Completato! Articoli sincronizzati: ${totaleScaricati}`);
-  return totaleScaricati;
+  console.log(`🎉 Completata! Articoli sincronizzati: ${totale}`);
+  return totale;
 }
+
