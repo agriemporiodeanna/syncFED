@@ -1,151 +1,164 @@
-import axios from "axios";
-import { parseStringPromise } from "xml2js";
-import { pool } from "./db.js";
-import dotenv from "dotenv";
-dotenv.config();
+// =====================
+// 📌 SYNCFED - BMAN SYNC
+// =====================
 
-const bmanURL = `https://${process.env.BMAN_DOMAIN}:3555/bmanapi.asmx`;
-import https from "https";
-const agent = new https.Agent({ rejectUnauthorized: false });
+require('dotenv').config();
+const axios = require("axios");
+const xml2js = require("xml2js");
+const db = require("./db");
+const https = require("https");
 
-// 🧠 Estrai solo la descrizione IT
-function estraiDescIT(html) {
-  if (!html) return "";
-  let text = html
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/?[^>]+(>|$)/g, "")
-    .trim();
+// ===============
+// 🔐 ENVIRONMENT
+// ===============
+const BMAN_DOMAIN = process.env.BMAN_DOMAIN; // es: emporiodeanna.bman.it
+const BMAN_KEY = process.env.BMAN_KEY;       // chiave API Bman
+const SERVER_TIMEOUT = parseInt(process.env.SERVER_TIMEOUT || "200000");
 
-  ["FR:", "ES:", "DE:"].forEach(lang => {
-    const idx = text.indexOf(lang);
-    if (idx !== -1) text = text.substring(0, idx).trim();
-  });
-  return text;
-}
+// =====================
+// 🔌 HTTPS AGENT (NO SSL VALIDATION)
+// =====================
+const agent = new https.Agent({
+  rejectUnauthorized: false,
+  keepAlive: false,
+});
 
-// 🌍 costruisci multilingua
-function estraiMultilingua(html) {
-  if (!html) return "";
-  let text = html
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/?[^>]+(>|$)/g, "")
-    .trim();
+// =======================================================
+// 🧱 COSTRUZIONE DELLA RICHIESTA SOAP PER getAnagrafiche
+// =======================================================
+function soapGetPage(page) {
+  const filterJson = `[{"chiave":"bmanShop","operatore":"=","valore":"true"}]`;
 
-  let out = [];
-  let langs = ["IT:", "FR:", "ES:", "DE:"];
-
-  langs.forEach((lang, idx) => {
-    let start = text.indexOf(lang);
-    if (start !== -1) {
-      let end = langs
-        .map(l => text.indexOf(l))
-        .filter(i => i > start)
-        .sort((a, b) => a - b)[0];
-
-      out.push(text.substring(start, end || text.length).trim());
-    }
-  });
-
-  return out.join("\n\n");
-}
-
-// 💰 prezzo negozio
-function trovaPrezzoNegozio(arrSconti) {
-  if (!arrSconti) return null;
-  for (const s of arrSconti) {
-    if (typeof s.Etichetta === "string" && s.Etichetta.toLowerCase().includes("negozio")) {
-      return Number(s.prezzo).toFixed(2);
-    }
-    if (typeof s.NomeCompleto === "string" && s.NomeCompleto.toLowerCase().includes("negozio")) {
-      return Number(s.prezzo).toFixed(2);
-    }
-  }
-  return arrSconti[0]?.prezzo ? Number(arrSconti[0].prezzo).toFixed(2) : null;
-}
-
-// 📦 scarica pagina articoli BMAN
-async function scaricaArticoliBman(pagina = 1) {
-  const soapEnvelope = `
+  return `
   <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
                  xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
     <soap:Body>
       <getAnagrafiche xmlns="http://cloud.bman.it/">
-        <chiave>${process.env.BMAN_KEY}</chiave>
-        <filtro>
-          <chiave>bmanShop</chiave>
-          <operatore>=</operatore>
-          <valore>true</valore>
-        </filtro>
-        <pagina>${pagina}</pagina>
+        <chiave>${BMAN_KEY}</chiave>
+        <filtri>${filterJson}</filtri>
+        <pagina>${page}</pagina>
       </getAnagrafiche>
     </soap:Body>
   </soap:Envelope>`;
-
-  const response = await axios.post(
-    bmanURL,
-    soapEnvelope,
-    { httpsAgent: agent, headers: { "Content-Type": "text/xml;charset=UTF-8" } }
-  );
-
-  const xml = await parseStringPromise(response.data, { explicitArray: false });
-  let result = xml["soap:Envelope"]["soap:Body"]["getAnagraficheResponse"]["getAnagraficheResult"];
-
-  try {
-    return JSON.parse(result);
-  } catch {
-    return [];
-  }
 }
 
-// 💾 salva in DB
-async function salvaProdottoDB(prod) {
-  await pool.query(
-    `INSERT INTO prodotti
-     (id_bman, codice, marca, titolo, descrizione_it, descrizione_html, prezzo, iva, tag, categoria1, categoria2, giacenza, img_link, img_local)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE
-     marca=VALUES(marca), titolo=VALUES(titolo), descrizione_it=VALUES(descrizione_it),
-     descrizione_html=VALUES(descrizione_html), prezzo=VALUES(prezzo), iva=VALUES(iva),
-     tag=VALUES(tag), categoria1=VALUES(categoria1), categoria2=VALUES(categoria2),
-     giacenza=VALUES(giacenza), img_link=VALUES(img_link), data_sync=CURRENT_TIMESTAMP`,
-    [
-      prod.ID,
-      prod.codice,
-      prod.opzionale1 || "",
-      prod.opzionale2 || "",
-      estraiDescIT(prod.descrizioneHtml),
-      estraiMultilingua(prod.descrizioneHtml),
-      trovaPrezzoNegozio(prod.arrSconti),
-      prod.iva || 22,
-      prod.tags || "",
-      prod.categoria1str || "",
-      prod.categoria2str || "",
-      prod.disponibilita || 0,
-      prod.arrFoto?.[0] || "",
-      null
-    ]
-  );
-}
+// =======================
+// 🔄 CHIAMATA A BMAN SOAP
+// =======================
+async function getPage(page = 1) {
+  const xmlReq = soapGetPage(page);
 
-// 🚀 sync principale
-export async function syncBman() {
-  console.log("🔁 Avvio sincronizzazione Bman...");
-
-  let pagina = 1;
-  let totale = 0;
-
-  while (true) {
-    const articoli = await scaricaArticoliBman(pagina);
-    if (!articoli || articoli.length === 0) break;
-    for (const a of articoli) {
-      await salvaProdottoDB(a);
-      totale++;
+  const { data } = await axios.post(
+    `https://${BMAN_DOMAIN}:3555/bmanapi.asmx`,
+    xmlReq,
+    {
+      httpsAgent: agent,
+      timeout: SERVER_TIMEOUT,
+      headers: {
+        "Content-Type": "text/xml;charset=UTF-8",
+      },
+      responseType: "text",
     }
-    pagina++;
-  }
+  );
 
-  console.log(`🎉 Completata! Articoli sincronizzati: ${totale}`);
-  return totale;
+  // Parse XML to JSON
+  return await xml2js.parseStringPromise(data, { explicitArray: false });
 }
+
+// ===========================
+// 📥 SALVA NEL DATABASE MYSQL
+// ===========================
+async function saveProducts(arr) {
+  for (const p of arr) {
+    try {
+      await db.query(
+        `INSERT INTO prodotti
+        (codice, marca, titolo, descrizione_it, descrizione_html, prezzo, iva, categoria1, categoria2, giacenza, img_link, data_sync)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+        ON DUPLICATE KEY UPDATE 
+          marca=VALUES(marca),
+          titolo=VALUES(titolo),
+          descrizione_it=VALUES(descrizione_it),
+          descrizione_html=VALUES(descrizione_html),
+          prezzo=VALUES(prezzo),
+          iva=VALUES(iva),
+          categoria1=VALUES(categoria1),
+          categoria2=VALUES(categoria2),
+          giacenza=VALUES(giacenza),
+          img_link=VALUES(img_link),
+          data_sync=NOW()`,
+        [
+          p.codice,
+          p.marca,
+          p.titolo,
+          p.descrizione_it,
+          p.descrizione_html,
+          p.prezzo,
+          p.iva,
+          p.cat1,
+          p.cat2,
+          p.giacenza,
+          p.img,
+        ]
+      );
+    } catch (err) {
+      console.error("❌ Errore salvataggio:", err.message);
+    }
+  }
+}
+
+// ==================================
+// 🧠 MAPPA I DATI BMAN → DB MySQL
+// ==================================
+function mapArticles(arr) {
+  return arr.map(a => ({
+    codice: a.codice,
+    marca: a.opzionale1 || "",
+    titolo: a.opzionale2 || "",
+    descrizione_it: a.opzionale12 || a.opzionale2 || "",
+    descrizione_html: `${a.opzionale12 || ""}${a.opzionale13 || ""}${a.opzionale14 || ""}${a.opzionale15 || ""}${a.opzionale16 || ""}`,
+    prezzo: a.arrSconti?.[0]?.prezzo || 0,
+    iva: a.iva || 22,
+    cat1: a.categoria1str || "",
+    cat2: a.categoria2str || "",
+    giacenza: a.giacenza || 0,
+    img: a.arrFoto?.[0] || "",
+  }));
+}
+
+// ==========================
+// ▶ MAIN SYNC FUNCTION
+// ==========================
+async function syncAll() {
+  try {
+    console.log("🔄 Avvio sincronizzazione da Bman...");
+
+    let page = 1;
+    let total = 0;
+
+    while (true) {
+      const json = await getPage(page);
+      const items = JSON.parse(json["soap:Envelope"]["soap:Body"]["getAnagraficheResponse"]["getAnagraficheResult"]);
+
+      if (!items || items.length === 0) break;
+
+      const mapped = mapArticles(items);
+      await saveProducts(mapped);
+
+      total += items.length;
+      console.log(`📦 Pagina ${page} sincronizzata (${items.length} articoli)`);
+      page++;
+    }
+
+    console.log(`🎉 SYNC COMPLETATA: ${total} articoli.`);
+    return { ok: true, articoli: total };
+  } catch (err) {
+    console.error("❌ ERRORE SYNC:", err);
+    return { ok: false, errore: err.message };
+  }
+}
+
+module.exports = { syncAll };
+
 
