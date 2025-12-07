@@ -1,8 +1,11 @@
-import { Client } from "basic-ftp";
-import dotenv from "dotenv";
-dotenv.config();
+// =========================
+// 📤 FTP UPLOAD FILE (ARUBA)
+// =========================
 
-export async function uploadToFTP(buffer, remoteName) {
+const { Client } = require("basic-ftp");
+require("dotenv").config();
+
+async function uploadToFTP(buffer, remoteName) {
   const client = new Client();
   try {
     await client.access({
@@ -13,10 +16,13 @@ export async function uploadToFTP(buffer, remoteName) {
       port: 21
     });
 
-    // Crea cartella se non esiste
+    // 📁 Crea cartella se non esiste
     await client.ensureDir(process.env.FTP_DIR);
+
+    // ⬆ Carica il file
     await client.uploadFrom(buffer, `${process.env.FTP_DIR}/${remoteName}`);
 
+    // 🔗 Restituisce URL pubblico HTTP
     return `${process.env.FTP_HTTP}/${remoteName}`;
   } catch (err) {
     console.error("❌ Errore upload FTP:", err);
@@ -25,3 +31,6 @@ export async function uploadToFTP(buffer, remoteName) {
     client.close();
   }
 }
+
+module.exports = { uploadToFTP };
+
