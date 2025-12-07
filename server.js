@@ -13,10 +13,18 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 🔐 Fix per Bman https
+// ⏱ Timeout dinamico
+const serverTimeout = parseInt(process.env.SERVER_TIMEOUT || "200000");
+app.use((req, res, next) => {
+  req.setTimeout(serverTimeout);
+  res.setTimeout(serverTimeout);
+  next();
+});
+
+// 🔐 Fix https per Bman
 const agent = new https.Agent({ rejectUnauthorized: false });
 
-// 🧠 Endpoint: sincronizzazione manuale
+// 🧠 Sync manuale
 app.get("/sync", async (req, res) => {
   try {
     const tot = await syncBman();
@@ -27,14 +35,11 @@ app.get("/sync", async (req, res) => {
   }
 });
 
-// 📸 Endpoint: cerca immagini libere per un codice
+// 📸 Ricerca immagini
 app.get("/image-search/:codice/:titolo/:marca", async (req, res) => {
-  const { codice, titolo, marca } = req.params;
-
-  // Genera query per siti liberi
+  const { titolo, marca } = req.params;
   const query = `${marca} ${titolo}`.trim();
 
-  // Fonti Pixabay, Pexels, Unsplash
   const urls = [
     `https://pixabay.com/api/?key=${process.env.PIXABAY_KEY}&q=${encodeURIComponent(query)}&image_type=photo`,
     `https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}`,
@@ -44,15 +49,12 @@ app.get("/image-search/:codice/:titolo/:marca", async (req, res) => {
   try {
     const results = {};
 
-    // Pixabay
     const px = await axios.get(urls[0]);
     results.pixabay = px.data.hits?.map(h => h.largeImageURL) || [];
 
-    // Pexels
     const pex = await axios.get(urls[1], { headers: { Authorization: process.env.PEXELS_KEY }});
     results.pexels = pex.data.photos?.map(p => p.src.large) || [];
 
-    // Unsplash
     const un = await axios.get(urls[2]);
     results.unsplash = un.data.results?.map(p => p.urls.regular) || [];
 
@@ -62,7 +64,7 @@ app.get("/image-search/:codice/:titolo/:marca", async (req, res) => {
   }
 });
 
-// 📤 Upload immagine selezionata → FTP → DB → Bman
+// 📤 Upload immagine
 app.post("/upload-image", async (req, res) => {
   try {
     const { imageURL, codice, id_bman } = req.body;
@@ -71,14 +73,12 @@ app.post("/upload-image", async (req, res) => {
     const fileName = `${codice}_${Date.now()}.jpg`;
     const urlFTP = await uploadToFTP(imgBuffer, fileName);
 
-    // Salva nel DB
     await pool.query(
       `INSERT INTO immagini_prodotto (id_bman, codice, url_originale, url_ftp, sorgente, licenza, predefinita)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [id_bman, codice, imageURL, urlFTP, "stock", "commerciale", 0]
     );
 
-    // Carica in Bman SOAP
     const bmanXML = `
     <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                    xmlns:xsd="http://www.w3.org/2001/XMLSchema"
@@ -105,11 +105,14 @@ app.post("/upload-image", async (req, res) => {
   }
 });
 
-// 🌍 Pagina test semplice
+// Pagina test
 app.get("/", (req, res) => {
   res.send("SyncFED API attivo 🚀");
 });
 
-// 🚦 Server in ascolto
+// 🚦 Avvio server con timeout globale
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 SyncFED attivo sulla porta ${PORT}`));
+const server = app.listen(PORT, () =>
+  console.log(`🚀 SyncFED attivo sulla porta ${PORT}`)
+);
+server.timeout = serverTimeout;
