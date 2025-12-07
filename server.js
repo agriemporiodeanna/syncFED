@@ -1,89 +1,69 @@
+// server.js
 import express from "express";
-import mysql from "./db.js";
+import cors from "cors";
+import dotenv from "dotenv";
 import { syncBman } from "./syncfed.js";
+import { pool } from "./db.js";
 import fetch from "node-fetch";
-import fs from "fs";
-import path from "path";
+
+// Carica variabili .env
+dotenv.config();
 
 const app = express();
+app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
-// ====== 🔐 VARIABILI ENV DA RENDER ======
-const GITHUB_TOKEN = process.env.token_github;
-const GITHUB_REPO = "agriemporiodeanna/SyncFED";
-
-// ====== 🏁 HOME ======
+// 📌 Home API
 app.get("/", (req, res) => {
-  res.send(`<h1>🤖 SyncFED Online</h1><p>Server attivo!</p>`);
+  res.send("🛒 SyncFED API attiva!");
 });
 
-// ====== 🛠 TEST SCRITTURA SU GITHUB ======
-app.get("/testgithub", async (req, res) => {
-  try {
-    const content = Buffer.from("SyncFED test success " + new Date()).toString("base64");
-
-    const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/contents/test_syncfed.txt`, {
-      method: "PUT",
-      headers: {
-        "Authorization": `Bearer ${GITHUB_TOKEN}`,
-        "Content-Type": "application/json",
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "SyncFED"
-      },
-      body: JSON.stringify({
-        message: "Test automatico SyncFED",
-        content
-      })
-    });
-
-    if (!response.ok) throw new Error("GitHub error: " + response.status);
-    res.json({ status: "ok", message: "✔ Test completato: file caricato su GitHub." });
-
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ status: "error", message: error.toString() });
-  }
-});
-
-// ====== ▶ AVVIO SINCRONIZZAZIONE MANUALE ======
+// ▶️ Avvia sincronizzazione manualmente
 app.get("/sync", async (req, res) => {
   try {
     await syncBman();
-    res.send("✔ Sincronizzazione completata");
-  } catch (error) {
-    res.status(500).send("❌ Errore sincronizzazione: " + error.toString());
+    res.json({ message: "Sincronizzazione completata!" });
+  } catch (err) {
+    console.error("❌ Errore sync:", err);
+    res.status(500).json({ error: "Errore durante sincronizzazione" });
   }
 });
 
-// ====== 📌 API LISTA ARTICOLI (VEDI SOLO NON APPROVATI SE RICHIESTO) ======
+// ⚡ Approva ottimizzazione di un articolo
+app.post("/approve/:codice", async (req, res) => {
+  try {
+    const { codice } = req.params;
+
+    await pool.query(
+      `UPDATE articoli SET ottimizzazione_approvata = 'SI' WHERE codice = ?`,
+      [codice]
+    );
+
+    res.json({ message: `Articolo ${codice} approvato!` });
+  } catch (err) {
+    console.error("❌ Errore approvazione:", err);
+    res.status(500).json({ error: "Errore durante approvazione articolo" });
+  }
+});
+
+// 📌 Lista articoli con filtro approvati o meno
 app.get("/articoli", async (req, res) => {
   try {
-    const show = req.query.type || "all"; // all oppure non-approvati
+    const filtro = req.query.filtro; // all / non_approvati
 
     let query = "SELECT * FROM articoli";
-    if (show === "non-approvati") query += " WHERE ottimizzazione <> 'si'";
+    if (filtro === "non_approvati") {
+      query += " WHERE ottimizzazione_approvata IS NULL OR ottimizzazione_approvata <> 'SI'";
+    }
 
-    const [rows] = await mysql.query(query);
+    const [rows] = await pool.query(query);
     res.json(rows);
   } catch (err) {
-    res.status(500).send("❌ Errore caricamento articoli");
+    console.error("❌ Errore recupero articoli:", err);
+    res.status(500).json({ error: "Errore query articoli" });
   }
 });
 
-// ====== 🆗 APPROVAZIONE ARTICOLO MANUALE ======
-app.post("/approva/:id", async (req, res) => {
-  try {
-    await mysql.query("UPDATE articoli SET ottimizzazione = 'si' WHERE id = ?", [req.params.id]);
-    res.json({ status: "ok", message: "✔ Articolo approvato" });
-  } catch (err) {
-    res.status(500).json({ status: "error", message: err.toString() });
-  }
-});
-
-// ====== 🚀 START SERVER ======
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🔥 SyncFED server attivo su porta ${PORT} `));
-
-
-
+// 🚀 Avvia server
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🚀 Server attivo su porta ${PORT}`));
