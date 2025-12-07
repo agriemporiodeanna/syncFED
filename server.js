@@ -2,9 +2,9 @@
 // 🚀 SERVER API SYNCFED
 // =====================
 
-import express from "express";
-import cors from "cors";
-import { syncAll } from "./syncfed.js";
+const express = require("express");
+const cors = require("cors");
+const { syncAll } = require("./syncfed.js");
 
 const app = express();
 app.use(cors());
@@ -36,3 +36,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 SyncFED attivo sulla porta ${PORT}`);
 });
+
