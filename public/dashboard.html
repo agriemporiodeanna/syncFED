@@ -1,84 +1,261 @@
-<!-- public/dashboard.html -->
 <!DOCTYPE html>
 <html lang="it">
   <head>
     <meta charset="UTF-8" />
-    <title>Dashboard SyncFED</title>
+    <title>SyncFED - Dashboard articoli</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
       body {
         font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
           sans-serif;
-        padding: 20px;
+        margin: 0;
+        padding: 0;
         background: #f5f5f5;
       }
-      h1 {
-        margin-bottom: 10px;
+      header {
+        background: #222;
+        color: #fff;
+        padding: 12px 20px;
       }
+      header h1 {
+        margin: 0;
+        font-size: 20px;
+      }
+      main {
+        padding: 16px 20px 40px;
+      }
+      .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+      select,
       button {
+        padding: 6px 10px;
+        border-radius: 4px;
+        border: 1px solid #ccc;
+        font-size: 14px;
+      }
+      button.primary {
+        background: #0069d9;
+        color: #fff;
+        border-color: #0062cc;
         cursor: pointer;
       }
-      #syncStatus {
-        margin: 10px 0;
-        font-size: 0.95rem;
+      button.primary:hover {
+        background: #0053b3;
+      }
+      button.success {
+        background: #28a745;
+        color: #fff;
+        border-color: #28a745;
+        cursor: pointer;
+      }
+      button.success[disabled] {
+        opacity: 0.4;
+        cursor: default;
       }
       table {
         width: 100%;
         border-collapse: collapse;
+        font-size: 13px;
         background: #fff;
-        margin-top: 10px;
       }
       th,
       td {
         border: 1px solid #ddd;
         padding: 6px 8px;
-        font-size: 0.85rem;
+        vertical-align: top;
       }
       th {
+        background: #f0f0f0;
+        position: sticky;
+        top: 0;
+        z-index: 1;
+      }
+      tr:nth-child(even) td {
+        background: #fafafa;
+      }
+      .tag {
+        font-size: 11px;
         background: #eee;
-      }
-      .pill {
+        border-radius: 3px;
+        padding: 2px 4px;
+        margin: 1px;
         display: inline-block;
-        padding: 2px 6px;
-        border-radius: 10px;
-        font-size: 0.75rem;
       }
-      .pill-no {
-        background: #ffe4e1;
-        color: #b22222;
+      .status-ok {
+        color: #28a745;
+        font-weight: 600;
       }
-      .pill-si {
-        background: #e0ffe4;
-        color: #228b22;
+      .status-no {
+        color: #c00;
+        font-weight: 600;
+      }
+      .small {
+        font-size: 11px;
+        color: #555;
       }
     </style>
   </head>
   <body>
-    <h1>Dashboard SyncFED</h1>
+    <header>
+      <h1>SyncFED - Gestione articoli BMAN</h1>
+    </header>
+    <main>
+      <div class="toolbar">
+        <label for="filtro">Mostra:</label>
+        <select id="filtro">
+          <option value="non_approvati">Solo NON approvati</option>
+          <option value="tutti">Tutti gli articoli</option>
+        </select>
 
-    <button id="btnSync">🔄 Esegui sync Bman → MySQL</button>
-    <span id="syncStatus"></span>
+        <button id="btn-refresh" class="primary">🔄 Aggiorna lista</button>
+        <button id="btn-sync" class="primary">⚙️ Lancia SYNC BMAN</button>
+        <span id="status" class="small"></span>
+      </div>
 
-    <h2>Articoli (max 500)</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>Codice</th>
-          <th>Marca</th>
-          <th>Titolo</th>
-          <th>Prezzo</th>
-          <th>IVA</th>
-          <th>Categorie</th>
-          <th>Tag</th>
-          <th>Giacenza</th>
-          <th>Ottimizzazione approvata</th>
-          <th>Azioni</th>
-        </tr>
-      </thead>
-      <tbody id="tbodyArticoli"></tbody>
-    </table>
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Codice</th>
+            <th>Marca</th>
+            <th>Titolo</th>
+            <th>Prezzo</th>
+            <th>Giacenza</th>
+            <th>Ottimizzazione</th>
+            <th>Azioni</th>
+          </tr>
+        </thead>
+        <tbody id="tbody-articoli"></tbody>
+      </table>
+    </main>
 
-    <script src="dashboard.js"></script>
+    <script>
+      const apiBase = "";
+
+      const tbody = document.getElementById("tbody-articoli");
+      const filtroSelect = document.getElementById("filtro");
+      const statusSpan = document.getElementById("status");
+      const btnRefresh = document.getElementById("btn-refresh");
+      const btnSync = document.getElementById("btn-sync");
+
+      async function caricaArticoli() {
+        tbody.innerHTML = "<tr><td colspan='8'>Caricamento in corso...</td></tr>";
+        statusSpan.textContent = "";
+
+        const filtro = filtroSelect.value;
+        const filtroParam =
+          filtro === "tutti" ? "tutti" : "non_approvati";
+
+        try {
+          const res = await fetch(
+            apiBase + "/articoli?filtro=" + encodeURIComponent(filtroParam)
+          );
+          if (!res.ok) throw new Error("Errore HTTP " + res.status);
+          const data = await res.json();
+
+          if (!Array.isArray(data) || data.length === 0) {
+            tbody.innerHTML =
+              "<tr><td colspan='8'>Nessun articolo trovato.</td></tr>";
+            return;
+          }
+
+          tbody.innerHTML = "";
+
+          for (const art of data) {
+            const tr = document.createElement("tr");
+
+            const ott = art.ottimizzazione_approvata === "SI";
+
+            tr.innerHTML = `
+              <td>${art.id}</td>
+              <td>${art.codice || ""}</td>
+              <td>${art.marca || ""}</td>
+              <td>${art.titolo || ""}</td>
+              <td>${art.prezzo != null ? art.prezzo.toFixed(2) + " €" : ""}</td>
+              <td>${art.giacenze != null ? art.giacenze : ""}</td>
+              <td>
+                ${
+                  ott
+                    ? "<span class='status-ok'>APPROVATO</span>"
+                    : "<span class='status-no'>DA OTTIMIZZARE</span>"
+                }
+              </td>
+              <td>
+                <button class="success" ${
+                  ott ? "disabled" : ""
+                } data-id="${art.id}">
+                  ✅ Approva
+                </button>
+              </td>
+            `;
+
+            tbody.appendChild(tr);
+          }
+
+          tbody.querySelectorAll("button.success").forEach((btn) => {
+            btn.addEventListener("click", async () => {
+              const id = btn.getAttribute("data-id");
+              if (!id) return;
+              btn.disabled = true;
+              btn.textContent = "⏳...";
+              try {
+                const res = await fetch(apiBase + "/articoli/" + id + "/approva", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                });
+                if (!res.ok) throw new Error("Errore HTTP " + res.status);
+                await caricaArticoli();
+              } catch (err) {
+                console.error(err);
+                alert("Errore durante l'approvazione");
+                btn.disabled = false;
+                btn.textContent = "✅ Approva";
+              }
+            });
+          });
+
+          statusSpan.textContent = `Articoli caricati: ${data.length}`;
+        } catch (err) {
+          console.error(err);
+          tbody.innerHTML =
+            "<tr><td colspan='8'>Errore nel caricamento articoli.</td></tr>";
+          statusSpan.textContent = "Errore nel caricamento";
+        }
+      }
+
+      async function lanciaSync() {
+        if (!confirm("Vuoi lanciare la sincronizzazione da BMAN?")) return;
+        btnSync.disabled = true;
+        btnSync.textContent = "⏳ Sync in corso...";
+        statusSpan.textContent = "";
+
+        try {
+          const res = await fetch(apiBase + "/sync", { method: "POST" });
+          if (!res.ok) throw new Error("Errore HTTP " + res.status);
+          const data = await res.json();
+          statusSpan.textContent =
+            "Sync completata. Articoli elaborati: " + (data.elaborati || "?");
+        } catch (err) {
+          console.error(err);
+          alert("Errore durante la sync");
+          statusSpan.textContent = "Errore sync";
+        } finally {
+          btnSync.disabled = false;
+          btnSync.textContent = "⚙️ Lancia SYNC BMAN";
+          caricaArticoli();
+        }
+      }
+
+      btnRefresh.addEventListener("click", caricaArticoli);
+      filtroSelect.addEventListener("change", caricaArticoli);
+      btnSync.addEventListener("click", lanciaSync);
+
+      caricaArticoli();
+    </script>
   </body>
 </html>
