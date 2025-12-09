@@ -1,131 +1,106 @@
-// public/dashboard.js
+const filtroSelect = document.getElementById("filtro-articoli");
+const btnAggiorna = document.getElementById("btn-aggiorna");
+const btnSync = document.getElementById("btn-sync");
+const tbody = document.querySelector("#tabella-articoli tbody");
 
 async function caricaArticoli() {
-  const tbody = document.getElementById("tbodyArticoli");
-  tbody.innerHTML = "<tr><td colspan='11'>Caricamento...</td></tr>";
+  const filter = filtroSelect.value || "all";
+  tbody.innerHTML = `<tr><td colspan="8" class="placeholder">Caricamento articoli...</td></tr>`;
 
   try {
-    const res = await fetch("/api/articoli");
+    const res = await fetch(`/api/articoli?filter=${encodeURIComponent(filter)}`);
     const data = await res.json();
+    if (!data.ok) throw new Error(data.errore || "Errore caricamento");
 
-    if (!data.ok) {
-      tbody.innerHTML = `<tr><td colspan='11'>Errore: ${data.message}</td></tr>`;
-      return;
-    }
+    const articoli = data.articoli || [];
 
-    const articoli = data.articoli;
-    if (!articoli || articoli.length === 0) {
-      tbody.innerHTML = "<tr><td colspan='11'>Nessun articolo trovato</td></tr>";
+    if (!articoli.length) {
+      tbody.innerHTML = `<tr><td colspan="8" class="placeholder">Nessun articolo trovato.</td></tr>`;
       return;
     }
 
     tbody.innerHTML = "";
-
-    for (const art of articoli) {
+    for (const a of articoli) {
       const tr = document.createElement("tr");
 
-      const pillClass =
-        art.ottimizzazione_approvata === "si" ? "pill pill-si" : "pill pill-no";
-      const pillText = art.ottimizzazione_approvata === "si" ? "SI" : "NO";
+      const prezzo = a.prezzo != null ? Number(a.prezzo).toFixed(2) + " €" : "";
+      const ott = a.ottimizzazione_approvata ? "SI" : "NO";
 
       tr.innerHTML = `
-        <td>${art.id}</td>
-        <td>${art.codice || ""}</td>
-        <td>${art.marca || ""}</td>
-        <td>${art.titolo || ""}</td>
-        <td>${art.prezzo != null ? art.prezzo.toFixed(2) : ""}</td>
-        <td>${art.iva != null ? art.iva : ""}</td>
-        <td>${art.categorie || ""}</td>
-        <td>${art.tags || ""}</td>
-        <td>${art.giacenza != null ? art.giacenza : ""}</td>
-        <td><span class="${pillClass}">${pillText}</span></td>
+        <td>${a.id}</td>
+        <td>${a.codice || ""}</td>
+        <td>${a.marca || ""}</td>
+        <td>${a.titolo || ""}</td>
+        <td>${prezzo}</td>
+        <td>${a.giacenza != null ? a.giacenza : ""}</td>
         <td>
-          <button class="btn-approva" data-id="${art.id}" ${
-        art.ottimizzazione_approvata === "si" ? "disabled" : ""
+          <span class="badge ${a.ottimizzazione_approvata ? "badge-ok" : "badge-no"}">
+            ${ott}
+          </span>
+        </td>
+        <td>
+          <button class="action-btn" data-id="${a.id}" ${
+        a.ottimizzazione_approvata ? "disabled" : ""
       }>
-            ✅ Approva ottimizzazione
+            ✅ Approva
           </button>
         </td>
       `;
 
       tbody.appendChild(tr);
     }
-
-    // Associa eventi ai pulsanti
-    document.querySelectorAll(".btn-approva").forEach((btn) => {
-      btn.addEventListener("click", async (e) => {
-        const id = e.currentTarget.getAttribute("data-id");
-        await approvaOttimizzazione(id);
-      });
-    });
   } catch (err) {
-    console.error("Errore caricando articoli:", err);
-    tbody.innerHTML =
-      "<tr><td colspan='11'>Errore caricando gli articoli</td></tr>";
+    console.error(err);
+    alert("Errore nel caricamento articoli");
+    tbody.innerHTML = `<tr><td colspan="8" class="placeholder">Errore nel caricamento articoli.</td></tr>`;
   }
 }
 
-async function approvaOttimizzazione(id) {
-  if (!confirm("Confermi l'approvazione dell'ottimizzazione per questo articolo?")) {
-    return;
-  }
-
+async function approvaArticolo(id) {
+  if (!confirm("Segnare questo articolo come OTTIMIZZATO?")) return;
   try {
     const res = await fetch(`/api/articoli/${id}/approva`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" }
     });
-
     const data = await res.json();
-    if (!data.ok) {
-      alert("Errore: " + (data.message || "Impossibile approvare"));
-      return;
-    }
-
-    // Ricarica la tabella
+    if (!data.ok) throw new Error(data.errore || "Errore approvazione");
     await caricaArticoli();
   } catch (err) {
-    console.error("Errore approvando ottimizzazione:", err);
-    alert("Errore di rete durante l'approvazione");
+    console.error(err);
+    alert("Errore durante l'approvazione articolo");
   }
 }
 
-async function eseguiSync() {
-  const status = document.getElementById("syncStatus");
-  status.textContent = "⏳ Sincronizzazione in corso...";
+async function avviaSync() {
+  if (!confirm("Avviare la sincronizzazione con BMAN?")) return;
+  btnSync.disabled = true;
+  btnSync.textContent = "⏱ Sync in corso...";
 
   try {
-    const res = await fetch("/sync", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
-
+    const res = await fetch("/api/sync", { method: "POST" });
     const data = await res.json();
-    if (!data.ok) {
-      status.textContent = "❌ Errore sync: " + (data.message || "Errore");
-      return;
-    }
-
-    const r = data.result || {};
-    status.textContent = `✅ Sync completata - letti: ${r.letti || 0}, inseriti: ${
-      r.inseriti || 0
-    }, aggiornati: ${r.aggiornati || 0}, saltati (approvati): ${
-      r.saltati_approvati || 0
-    }`;
-
-    // Dopo la sync, aggiorna la tabella
+    if (!data.ok) throw new Error(data.errore || "Errore sync");
+    alert(`Sync completata. Articoli elaborati: ${data.imported}`);
     await caricaArticoli();
   } catch (err) {
-    console.error("Errore sync:", err);
-    status.textContent = "❌ Errore di rete nella sync";
+    console.error(err);
+    alert("Errore durante la sync");
+  } finally {
+    btnSync.disabled = false;
+    btnSync.textContent = "⚙️ Sync";
   }
 }
 
-document.addEventListener("DOMContentLoaded", () => {
-  document.getElementById("btnSync").addEventListener("click", eseguiSync);
-  caricaArticoli();
+btnAggiorna.addEventListener("click", caricaArticoli);
+btnSync.addEventListener("click", avviaSync);
+filtroSelect.addEventListener("change", caricaArticoli);
+
+tbody.addEventListener("click", (ev) => {
+  const btn = ev.target.closest("button.action-btn");
+  if (!btn) return;
+  const id = btn.getAttribute("data-id");
+  if (id) approvaArticolo(id);
 });
+
+caricaArticoli();

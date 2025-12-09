@@ -1,11 +1,8 @@
-import ftp from "basic-ftp";
-import dotenv from "dotenv";
+// Modulo FTP semplificato: per ora uploadImage è solo uno stub
+// così il resto dell'applicazione non va in errore.
 
-dotenv.config();
-
-// Funzione placeholder: per ora non carica realmente i file,
-// ma è pronta per essere estesa in futuro.
-export async function uploadImage(localInfo, remoteFileName) {
-  console.log("📁 FTP upload non attivo (placeholder):", remoteFileName);
-  return null;
+export async function uploadImage(localPath, remoteFileName) {
+  console.log("📁 [FAKE FTP] uploadImage", { localPath, remoteFileName });
+  // Restituiamo un path simbolico
+  return `/img/${remoteFileName}`;
 }

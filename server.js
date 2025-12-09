@@ -1,11 +1,10 @@
 import express from "express";
 import cors from "cors";
-import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
-
-import { syncBman } from "./syncfed.js";
+import dotenv from "dotenv";
 import { pool } from "./db.js";
+import { syncBman } from "./syncfed.js";
 
 dotenv.config();
 
@@ -19,58 +18,65 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
-app.get("/status", (req, res) => {
-  res.json({ ok: true, message: "SyncFED attivo" });
-});
-
-app.post("/sync", async (req, res) => {
+// API: lista articoli
+app.get("/api/articoli", async (req, res) => {
   try {
-    const result = await syncBman();
-    res.json(result);
-  } catch (err) {
-    console.error("❌ ERRORE SYNC:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
+    const filter = req.query.filter || "all";
+    let sql = "SELECT * FROM prodotti";
+    const params = [];
 
-app.get("/articoli", async (req, res) => {
-  try {
-    const filtro = req.query.filtro || "non_approvati";
-    let where = "";
-
-    if (filtro === "non_approvati") {
-      where =
-        "WHERE ottimizzazione_approvata <> 'SI' OR ottimizzazione_approvata IS NULL";
+    if (filter === "not_approved") {
+      sql += " WHERE ottimizzazione_approvata = 0";
     }
 
-    const [rows] = await pool.query(
-      `SELECT * FROM articoli_bman ${where} ORDER BY id DESC LIMIT 500`
-    );
-    res.json(rows);
+    sql += " ORDER BY titolo ASC";
+
+    const [rows] = await pool.query(sql, params);
+    res.json({ ok: true, articoli: rows });
   } catch (err) {
-    console.error("❌ ERRORE GET /articoli:", err);
-    res.status(500).json({ error: "Errore lettura articoli" });
+    console.error("❌ ERRORE GET /api/articoli:", err);
+    res.status(500).json({ ok: false, errore: "Errore caricamento articoli" });
   }
 });
 
-app.post("/articoli/:id/approva", async (req, res) => {
+// API: approva un articolo
+app.post("/api/articoli/:id/approva", async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = parseInt(req.params.id, 10);
+    if (!id) {
+      return res.status(400).json({ ok: false, errore: "ID non valido" });
+    }
+
     await pool.query(
-      "UPDATE articoli_bman SET ottimizzazione_approvata = 'SI', data_approvazione = NOW() WHERE id = ?",
+      "UPDATE prodotti SET ottimizzazione_approvata = 1 WHERE id = ?",
       [id]
     );
+
     res.json({ ok: true });
   } catch (err) {
-    console.error("❌ ERRORE POST /articoli/:id/approva:", err);
-    res.status(500).json({ error: "Errore aggiornamento articolo" });
+    console.error("❌ ERRORE POST /api/articoli/:id/approva:", err);
+    res
+      .status(500)
+      .json({ ok: false, errore: "Errore durante l'approvazione articolo" });
   }
 });
 
+// API: avvia sincronizzazione
+app.post("/api/sync", async (req, res) => {
+  try {
+    const result = await syncBman();
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error("❌ ERRORE SYNC:", err);
+    res.status(500).json({ ok: false, errore: "Errore durante la sync" });
+  }
+});
+
+// Dashboard
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "dashboard.html"));
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server attivo su porta ${PORT}`);
+  console.log(`🚀 SyncFED attivo su porta ${PORT}`);
 });

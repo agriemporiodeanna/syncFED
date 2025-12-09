@@ -1,198 +1,202 @@
 import axios from "axios";
-import xml2js from "xml2js";
-import https from "https";
+import { parseStringPromise } from "xml2js";
 import { pool } from "./db.js";
+import dotenv from "dotenv";
 
-const BMAN_ENDPOINT =
-  process.env.BMAN_ENDPOINT ||
-  "https://emporiodeanna.bman.it:3555/bmanapi.asmx";
-const BMAN_KEY = process.env.BMAN_KEY;
+dotenv.config();
 
-const parser = new xml2js.Parser({ explicitArray: false });
+const BMAN_URL = "https://emporiodeanna.bman.it:3555/bmanapi.asmx";
+const BMAN_KEY = process.env.BMAN_KEY || process.env.Bman_key;
 
-async function callBman(page) {
-  const soapBody = `
+/**
+ * Costruisce la envelope SOAP per getAnagrafiche.
+ * Usa il parametro <filtri> con JSON come richiesto da BMAN.
+ * Filtra per bmanShop = true.
+ */
+function buildSoapEnvelope(page) {
+  if (!BMAN_KEY) {
+    throw new Error("BMAN_KEY non definita (manca ENV BMAN_KEY / Bman_key)");
+  }
+
+  const filtriJson = JSON.stringify([{
+    chiave: "bmanShop",
+    operatore: "=",
+    valore: "true"
+  }]);
+
+  // Escape JSON per metterlo dentro XML
+  const filtriXml = filtriJson
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+
+  return `
     <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                    xmlns:xsd="http://www.w3.org/2001/XMLSchema"
                    xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
       <soap:Body>
         <getAnagrafiche xmlns="http://cloud.bman.it/">
           <chiave>${BMAN_KEY}</chiave>
-          <filtro>
-            <chiave>bmanShop</chiave>
-            <operatore>=</operatore>
-            <valore>true</valore>
-          </filtro>
-          <pagina>${page}</pagina>
+          <filtri>${filtriXml}</filtri>
+          <ordinamentoCampo></ordinamentoCampo>
+          <ordinamentoDirezione>0</ordinamentoDirezione>
+          <nPagina>${page}</nPagina>
+          <listaDepositi></listaDepositi>
+          <dettaglioVarianti>false</dettaglioVarianti>
         </getAnagrafiche>
       </soap:Body>
-    </soap:Envelope>`;
+    </soap:Envelope>
+  `.trim();
+}
 
-  const { data } = await axios.post(BMAN_ENDPOINT, soapBody, {
-    headers: { "Content-Type": "text/xml;charset=UTF-8" },
-    httpsAgent: new https.Agent({ rejectUnauthorized: false }),
-    timeout: 120000,
+/**
+ * Chiama il WS BMAN e restituisce l'array di articoli + info paginazione.
+ */
+async function callBman(page = 1) {
+  const xmlBody = buildSoapEnvelope(page);
+
+  const response = await axios.post(BMAN_URL, xmlBody, {
+    headers: {
+      "Content-Type": "text/xml;charset=UTF-8"
+    },
+    timeout: 120000
   });
 
-  const js = await parser.parseStringPromise(data);
-  const result =
-    js["soap:Envelope"]["soap:Body"]["getAnagraficheResponse"][
-      "getAnagraficheResult"
-    ];
+  const xml = response.data;
+  const json = await parseStringPromise(xml, { explicitArray: false });
 
-  if (!result) return [];
+  const resultStr =
+    json?.["soap:Envelope"]?.["soap:Body"]?.getAnagraficheResponse?.getAnagraficheResult;
 
-  const items = JSON.parse(result);
-  return items;
-}
-
-function mapArticle(item) {
-  const idAnagrafica = item.ID;
-  const codice = item.codice;
-  const marca = item.opzionale1 || "";
-  const titolo = item.opzionale2 || item.descrizione || "";
-
-  const descr_it = item.opzionale2 || "";
-  const descr_fr = item.opzionale13 || "";
-  const descr_es = item.opzionale15 || "";
-  const descr_de = item.opzionale16 || "";
-
-  const descr_html_parts = [];
-  if (descr_it) descr_html_parts.push(`<p>${descr_it}</p>`);
-  if (descr_fr) descr_html_parts.push(`<p><strong>FR:</strong> ${descr_fr}</p>`);
-  if (descr_es) descr_html_parts.push(`<p><strong>ES:</strong> ${descr_es}</p>`);
-  if (descr_de) descr_html_parts.push(`<p><strong>DE:</strong> ${descr_de}</p>`);
-  const descrizione_html = descr_html_parts.join("");
-
-  const listinoNegozio = (item.arrSconti || []).find(
-    (s) => s.Etichetta === "Viridex/Negozio" || s.IDListino === 9
-  );
-  const prezzo = listinoNegozio ? Number(listinoNegozio.prezzo) : null;
-  const iva = item.iva ?? null;
-
-  const tags = item.tags || "";
-  const categorie = [
-    item.categoria1str,
-    item.categoria2str,
-    item.categoria3str,
-    item.categoria4str,
-    item.categoria5str,
-  ]
-    .filter(Boolean)
-    .join(" > ");
-
-  const giacenze = item.giacenza ?? 0;
-  const foto = (item.arrFoto && item.arrFoto[0]) || "";
-
-  return {
-    idAnagrafica,
-    codice,
-    marca,
-    titolo,
-    descr_it,
-    descr_fr,
-    descr_es,
-    descr_de,
-    descrizione_html,
-    prezzo,
-    iva,
-    tags,
-    categorie,
-    giacenze,
-    foto,
-  };
-}
-
-export async function syncBman() {
-  if (!BMAN_KEY) {
-    throw new Error("BMAN_KEY non impostata nell'env");
+  if (!resultStr) {
+    throw new Error("Risposta BMAN senza getAnagraficheResult");
   }
 
+  const result = JSON.parse(resultStr);
+
+  const articoli = result.articoli || [];
+  const paginaCorrente = result.paginaCorrente || page;
+  const pagineTotali = result.pagineTotali || page;
+
+  return { articoli, paginaCorrente, pagineTotali };
+}
+
+/**
+ * Salva / aggiorna un singolo articolo in tabella prodotti.
+ * Se ottimizzazione_approvata = 1, NON aggiorna l'articolo.
+ */
+async function salvaArticolo(a) {
+  const idBman = a.id;
+  if (!idBman) return;
+
+  const codice = a.codice || "";
+  const marca = a.brand || a.marca || "";
+  const titolo = a.titolo || a.descrizione || "";
+  const descrizione_it = a.descrizioneIT || a.descrizione_it || "";
+  const descrizione_fr = a.descrizioneFR || "";
+  const descrizione_es = a.descrizioneES || "";
+  const descrizione_de = a.descrizioneDE || "";
+
+  const descrizione_html =
+    `<p><strong>IT</strong> ${descrizione_it}</p>` +
+    (descrizione_fr ? `<p><strong>FR</strong> ${descrizione_fr}</p>` : "") +
+    (descrizione_es ? `<p><strong>ES</strong> ${descrizione_es}</p>` : "") +
+    (descrizione_de ? `<p><strong>DE</strong> ${descrizione_de}</p>` : "");
+
+  const prezzo = a.prezzoNegozio || a.prezzo || 0;
+  const iva = a.iva || 22;
+  const tag = Array.isArray(a.tag) ? a.tag.join(",") : (a.tag || "");
+  const categoria1 = a.categoria1 || "";
+  const categoria2 = a.categoria2 || "";
+  const giacenza = a.giacenza || 0;
+  const img_link = a.img_link || a.immagine || "";
+
+  const [rows] = await pool.query(
+    "SELECT id, ottimizzazione_approvata FROM prodotti WHERE id_bman = ? LIMIT 1",
+    [idBman]
+  );
+
+  if (rows.length && rows[0].ottimizzazione_approvata === 1) {
+    console.log("⏭  Salto articolo ottimizzato:", idBman, codice);
+    return;
+  }
+
+  if (rows.length) {
+    await pool.query(
+      `UPDATE prodotti
+       SET codice = ?, marca = ?, titolo = ?, descrizione_it = ?, descrizione_html = ?,
+           prezzo = ?, iva = ?, tag = ?, categoria1 = ?, categoria2 = ?,
+           giacenza = ?, img_link = ?, data_sync = NOW()
+       WHERE id_bman = ?`,
+      [
+        codice,
+        marca,
+        titolo,
+        descrizione_it,
+        descrizione_html,
+        prezzo,
+        iva,
+        tag,
+        categoria1,
+        categoria2,
+        giacenza,
+        img_link,
+        idBman
+      ]
+    );
+  } else {
+    await pool.query(
+      `INSERT INTO prodotti
+       (id_bman, codice, marca, titolo, descrizione_it, descrizione_html,
+        prezzo, iva, tag, categoria1, categoria2, giacenza, img_link,
+        img_local, data_sync, ottimizzazione_approvata)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NOW(), 0)`,
+      [
+        idBman,
+        codice,
+        marca,
+        titolo,
+        descrizione_it,
+        descrizione_html,
+        prezzo,
+        iva,
+        tag,
+        categoria1,
+        categoria2,
+        giacenza,
+        img_link
+      ]
+    );
+  }
+}
+
+/**
+ * Sincronizza tutte le pagine da BMAN verso MySQL.
+ */
+export async function syncBman() {
   let page = 1;
-  let total = 0;
-  let done = false;
+  let imported = 0;
 
-  while (!done) {
+  console.log("📦 Avvio sincronizzazione BMAN...");
+  while (true) {
     console.log(`📦 Sincronizzo pagina ${page}...`);
-    const items = await callBman(page);
+    const { articoli, paginaCorrente, pagineTotali } = await callBman(page);
 
-    if (!items || items.length === 0) {
-      done = true;
-      break;
+    for (const a of articoli) {
+      try {
+        await salvaArticolo(a);
+        imported++;
+      } catch (err) {
+        console.error("❌ Errore salvataggio articolo:", err?.message || err);
+      }
     }
 
-    for (const item of items) {
-      const mapped = mapArticle(item);
-
-      const [existingRows] = await pool.query(
-        "SELECT id, ottimizzazione_approvata FROM articoli_bman WHERE id_anagrafica = ?",
-        [mapped.idAnagrafica]
-      );
-      const existing = existingRows[0];
-
-      if (existing && existing.ottimizzazione_approvata === "SI") {
-        continue;
-      }
-
-      if (existing) {
-        await pool.query(
-          `UPDATE articoli_bman
-           SET codice = ?, marca = ?, titolo = ?, descrizione_it = ?,
-               descrizione_fr = ?, descrizione_es = ?, descrizione_de = ?,
-               descrizione_html = ?, prezzo = ?, iva = ?, tags = ?,
-               categorie = ?, giacenze = ?, foto = ?
-           WHERE id_anagrafica = ?`,
-          [
-            mapped.codice,
-            mapped.marca,
-            mapped.titolo,
-            mapped.descr_it,
-            mapped.descr_fr,
-            mapped.descr_es,
-            mapped.descr_de,
-            mapped.descrizione_html,
-            mapped.prezzo,
-            mapped.iva,
-            mapped.tags,
-            mapped.categorie,
-            mapped.giacenze,
-            mapped.foto,
-            mapped.idAnagrafica,
-          ]
-        );
-      } else {
-        await pool.query(
-          `INSERT INTO articoli_bman
-           (id_anagrafica, codice, marca, titolo,
-            descrizione_it, descrizione_fr, descrizione_es, descrizione_de,
-            descrizione_html, prezzo, iva, tags, categorie, giacenze, foto)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-          [
-            mapped.idAnagrafica,
-            mapped.codice,
-            mapped.marca,
-            mapped.titolo,
-            mapped.descr_it,
-            mapped.descr_fr,
-            mapped.descr_es,
-            mapped.descr_de,
-            mapped.descrizione_html,
-            mapped.prezzo,
-            mapped.iva,
-            mapped.tags,
-            mapped.categorie,
-            mapped.giacenze,
-            mapped.foto,
-          ]
-        );
-      }
-
-      total++;
-    }
-
+    if (paginaCorrente >= pagineTotali) break;
     page++;
   }
 
-  console.log(`✅ Sync completata. Articoli elaborati: ${total}`);
-  return { ok: true, elaborati: total };
+  console.log("✅ Sync completata. Articoli elaborati:", imported);
+  return { imported };
 }
