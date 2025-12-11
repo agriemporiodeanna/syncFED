@@ -1,13 +1,15 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import { pool, testConnection } from "./db.js";
-import { syncBman } from "./syncfed.js";
 import path from "path";
 import { fileURLToPath } from "url";
 
+import { readSheet, writeSheet } from "./googleSheet.js";
+import { syncBman } from "./syncfed.js";
+
 dotenv.config();
 
+// Path handling
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -15,70 +17,80 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Static dashboard
+// Serve dashboard static files
 app.use(express.static(path.join(__dirname, "public")));
 
-app.get("/test", async (req, res) => {
+/* ----------------------------------------------------
+   🔵 TEST GOOGLE SHEETS
+---------------------------------------------------- */
+app.get("/test-sheet", async (req, res) => {
   try {
-    await testConnection();
-    res.json({ ok: true, message: "Connessione MySQL OK" });
+    const rows = await readSheet();
+
+    res.json({
+      ok: true,
+      message: "Connessione Google Sheet OK",
+      rows_read: rows.length,
+      sample: rows.slice(0, 5),
+    });
   } catch (err) {
+    console.error("Errore Google Sheet:", err);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// Lista articoli per dashboard
+/* ----------------------------------------------------
+   🔵 LISTA ARTICOLI (da Google Sheet)
+---------------------------------------------------- */
 app.get("/api/articoli", async (req, res) => {
   try {
     const filter = req.query.filter || "non_approvati";
 
-    let whereClause = "";
-    if (filter === "non_approvati") {
-      whereClause = "WHERE ottimizzazione_approvata IS NULL OR UPPER(ottimizzazione_approvata) <> 'SI'";
-    }
+    let rows = await readSheet();
 
-    const [rows] = await pool.query(
-      `
-      SELECT
-        codice,
-        marca,
-        titolo,
-        prezzo,
-        iva,
-        giacenze,
-        categorie,
-        tag,
-        ottimizzazione_approvata
-      FROM articoli_syncfed
-      ${whereClause}
-      ORDER BY codice ASC
-      LIMIT 500
-    `
-    );
+    if (filter === "non_approvati") {
+      rows = rows.filter(
+        (r) =>
+          !r.ottimizzazione_approvata ||
+          r.ottimizzazione_approvata.toUpperCase() !== "SI"
+      );
+    }
 
     res.json(rows);
   } catch (err) {
     console.error("Errore /api/articoli:", err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// Approva singolo articolo
+/* ----------------------------------------------------
+   🔵 APPROVA ARTICOLO (modifica Google Sheet)
+---------------------------------------------------- */
 app.post("/api/articoli/:codice/approva", async (req, res) => {
-  const { codice } = req.params;
   try {
-    await pool.query(
-      "UPDATE articoli_syncfed SET ottimizzazione_approvata = 'SI' WHERE codice = ?",
-      [codice]
-    );
+    const codice = req.params.codice;
+    const rows = await readSheet();
+
+    const index = rows.findIndex((r) => r.codice == codice);
+
+    if (index === -1) {
+      return res.status(404).json({ ok: false, error: "Articolo non trovato" });
+    }
+
+    rows[index].ottimizzazione_approvata = "SI";
+
+    await writeSheet(rows);
+
     res.json({ ok: true });
   } catch (err) {
-    console.error("Errore approvazione articolo", codice, err.message);
-    res.status(500).json({ error: err.message });
+    console.error("Errore approva articolo:", err.message);
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// Trigger sync manuale
+/* ----------------------------------------------------
+   🔵 TRIGGER SYNC DA BMAN
+---------------------------------------------------- */
 app.post("/api/sync", async (req, res) => {
   try {
     const result = await syncBman();
@@ -89,8 +101,11 @@ app.post("/api/sync", async (req, res) => {
   }
 });
 
+/* ----------------------------------------------------
+   🔵 AVVIO SERVER
+---------------------------------------------------- */
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
-  console.log(`✅ Server avviato sulla porta ${PORT}`);
+  console.log(`🚀 SyncFED (Google Sheet Mode) attivo sulla porta ${PORT}`);
 });
