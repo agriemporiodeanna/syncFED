@@ -1,3 +1,4 @@
+// googleSheets.js
 import { google } from "googleapis";
 
 export async function getSheetClient() {
@@ -11,19 +12,19 @@ export async function getSheetClient() {
   return google.sheets({ version: "v4", auth });
 }
 
-export async function readProducts() {
+export async function readAllProducts() {
   const sheets = await getSheetClient();
   const sheetId = process.env.GOOGLE_SHEET_ID;
 
-  const response = await sheets.spreadsheets.values.get({
+  const res = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: "Prodotti!A2:N9999" // ← colonne complete
+    range: "Prodotti!A2:N9999"
   });
 
-  return response.data.values || [];
+  return res.data.values || [];
 }
 
-export async function writeProduct(rowValues) {
+export async function appendProduct(row) {
   const sheets = await getSheetClient();
   const sheetId = process.env.GOOGLE_SHEET_ID;
 
@@ -32,7 +33,23 @@ export async function writeProduct(rowValues) {
     range: "Prodotti!A2",
     valueInputOption: "RAW",
     requestBody: {
-      values: [rowValues]
+      values: [row]
+    }
+  });
+
+  return true;
+}
+
+export async function updateProduct(rowNumber, rowData) {
+  const sheets = await getSheetClient();
+  const sheetId = process.env.GOOGLE_SHEET_ID;
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `Prodotti!A${rowNumber}:N${rowNumber}`,
+    valueInputOption: "RAW",
+    requestBody: {
+      values: [rowData]
     }
   });
 
