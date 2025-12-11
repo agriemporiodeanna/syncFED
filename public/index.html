@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <title>SyncFED Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #f4f4f5;
+        margin: 0;
+        padding: 0;
+      }
+      header {
+        background: #111827;
+        color: #f9fafb;
+        padding: 1rem 1.5rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 1.25rem;
+      }
+      .container {
+        padding: 1.5rem;
+      }
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        align-items: center;
+        margin-bottom: 1rem;
+      }
+      button, select {
+        border-radius: 0.5rem;
+        border: 1px solid #d4d4d8;
+        padding: 0.4rem 0.8rem;
+        font-size: 0.9rem;
+        background: #fff;
+      }
+      button.primary {
+        background: #16a34a;
+        color: #fff;
+        border-color: #16a34a;
+        cursor: pointer;
+      }
+      button.primary:hover {
+        background: #15803d;
+      }
+      button.approva {
+        background: #2563eb;
+        border-color: #2563eb;
+        color: #fff;
+        cursor: pointer;
+      }
+      button.approva[disabled] {
+        opacity: 0.5;
+        cursor: default;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: #fff;
+        border-radius: 0.75rem;
+        overflow: hidden;
+        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+      }
+      thead {
+        background: #e5e7eb;
+      }
+      th, td {
+        padding: 0.5rem 0.75rem;
+        font-size: 0.8rem;
+        border-bottom: 1px solid #e5e7eb;
+        text-align: left;
+      }
+      th {
+        font-weight: 600;
+        white-space: nowrap;
+      }
+      tr:last-child td {
+        border-bottom: none;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0.15rem 0.4rem;
+        border-radius: 999px;
+        font-size: 0.7rem;
+      }
+      .badge-si {
+        background: #dcfce7;
+        color: #166534;
+      }
+      .badge-no {
+        background: #fee2e2;
+        color: #b91c1c;
+      }
+      .status {
+        font-size: 0.8rem;
+        color: #4b5563;
+        margin-top: 0.5rem;
+      }
+      .status strong {
+        color: #111827;
+      }
+      .table-wrapper {
+        overflow-x: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>SyncFED – Emporio Deanna</h1>
+      <div>
+        <button class="primary" id="btnSync">Sync da Bman</button>
+      </div>
+    </header>
+
+    <div class="container">
+      <div class="controls">
+        <label for="filterSelect"><strong>Filtro:</strong></label>
+        <select id="filterSelect">
+          <option value="non_approvati">Non approvati</option>
+          <option value="tutti">Tutti</option>
+        </select>
+        <span class="status" id="statusLabel">Caricamento articoli...</span>
+      </div>
+
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Codice</th>
+              <th>Marca</th>
+              <th>Titolo</th>
+              <th>Prezzo</th>
+              <th>IVA</th>
+              <th>Giacenza</th>
+              <th>Categorie</th>
+              <th>Tag</th>
+              <th>Ottimizzazione</th>
+              <th>Azione</th>
+            </tr>
+          </thead>
+          <tbody id="tbodyArticoli"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <script>
+      const tbody = document.getElementById("tbodyArticoli");
+      const statusLabel = document.getElementById("statusLabel");
+      const filterSelect = document.getElementById("filterSelect");
+      const btnSync = document.getElementById("btnSync");
+
+      async function caricaArticoli() {
+        const filter = filterSelect.value;
+        statusLabel.textContent = "Caricamento articoli...";
+        tbody.innerHTML = "";
+        try {
+          const res = await fetch(`/api/articoli?filter=${encodeURIComponent(filter)}`);
+          if (!res.ok) throw new Error("Errore HTTP " + res.status);
+          const data = await res.json();
+          renderTabella(data);
+          statusLabel.innerHTML = `<strong>${data.length}</strong> articoli caricati (${filter === "non_approvati" ? "solo non approvati" : "tutti"})`;
+        } catch (err) {
+          console.error(err);
+          statusLabel.textContent = "Errore nel caricamento articoli: " + err.message;
+        }
+      }
+
+      function renderTabella(articoli) {
+        tbody.innerHTML = "";
+        for (const art of articoli) {
+          const tr = document.createElement("tr");
+
+          const approved = (art.ottimizzazione_approvata || "").toUpperCase() === "SI";
+
+          tr.innerHTML = `
+            <td>${art.codice || ""}</td>
+            <td>${art.marca || ""}</td>
+            <td>${art.titolo || ""}</td>
+            <td>${art.prezzo != null ? art.prezzo.toFixed ? art.prezzo.toFixed(2) : art.prezzo : ""}</td>
+            <td>${art.iva != null ? art.iva : ""}</td>
+            <td>${art.giacenze != null ? art.giacenze : ""}</td>
+            <td>${art.categorie || ""}</td>
+            <td>${art.tag || ""}</td>
+            <td>
+              <span class="badge ${approved ? "badge-si" : "badge-no"}">
+                ${approved ? "SI" : "NO"}
+              </span>
+            </td>
+            <td>
+              <button class="approva" ${approved ? "disabled" : ""}>
+                Approva
+              </button>
+            </td>
+          `;
+
+          const btn = tr.querySelector("button.approva");
+          if (!approved) {
+            btn.addEventListener("click", async () => {
+              btn.disabled = true;
+              btn.textContent = "Salvo...";
+              try {
+                const res = await fetch(`/api/articoli/${encodeURIComponent(art.codice)}/approva`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                });
+                if (!res.ok) throw new Error("Errore HTTP " + res.status);
+                // dopo approvazione, ricarico la lista (per rispettare il filtro)
+                await caricaArticoli();
+              } catch (err) {
+                console.error(err);
+                alert("Errore nell'approvazione: " + err.message);
+                btn.disabled = false;
+                btn.textContent = "Approva";
+              }
+            });
+          }
+
+          tbody.appendChild(tr);
+        }
+      }
+
+      filterSelect.addEventListener("change", () => {
+        caricaArticoli();
+      });
+
+      btnSync.addEventListener("click", async () => {
+        if (!confirm("Avviare la sincronizzazione da Bman?")) return;
+        btnSync.disabled = true;
+        btnSync.textContent = "Sync in corso...";
+        statusLabel.textContent = "Sync in corso...";
+        try {
+          const res = await fetch("/api/sync", { method: "POST" });
+          const data = await res.json();
+          if (!res.ok || !data.ok) {
+            throw new Error(data.error || "Errore sync");
+          }
+          statusLabel.textContent = `Sync completata. Articoli processati: ${data.totale}`;
+          await caricaArticoli();
+        } catch (err) {
+          console.error(err);
+          alert("Errore nella sync: " + err.message);
+          statusLabel.textContent = "Errore nella sync.";
+        } finally {
+          btnSync.disabled = false;
+          btnSync.textContent = "Sync da Bman";
+        }
+      });
+
+      // primo caricamento
+      caricaArticoli();
+    </script>
+  </body>
+</html>
