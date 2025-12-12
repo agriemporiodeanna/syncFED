@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SyncFED • Dashboard</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>SyncFED • Dashboard (Google Sheet)</h1>
+    <div class="actions">
+      <select id="filterSelect">
+        <option value="non_approvati">Non approvati</option>
+        <option value="tutti">Tutti</option>
+      </select>
+      <button id="refreshBtn">Aggiorna elenco</button>
+      <button id="syncBtn" title="Placeholder">Sync (Bman → Sheet)</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <table id="articoliTable">
+      <thead>
+        <tr>
+          <th>Codice</th>
+          <th>Descrizione (IT)</th>
+          <th>Prezzo</th>
+          <th>Quantità</th>
+          <th>Categoria</th>
+          <th>Sottocategoria</th>
+          <th>Tags</th>
+          <th>Ottimizzazione</th>
+          <th>Ultimo Agg.</th>
+          <th>Azioni</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
