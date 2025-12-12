@@ -1,155 +1,131 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import { google } from "googleapis";
+import path from "path";
+import { fileURLToPath } from "url";
+
+import { SheetsStore, ensureHeaders } from "./SheetsStore.js";
 
 dotenv.config();
 
-const store = new SheetsStore({
-  clientEmail: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-  privateKey: process.env.GOOGLE_PRIVATE_KEY,
-  spreadsheetId: process.env.GOOGLE_SHEETS_ID,
-  sheetName: "foglio1",
-});
-
-await store.testAuth(); // 🔥 questo ti salva ore di debug
-
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(express.static(path.join(__dirname, "public")));
 
+// =======================
+// CONFIG
+// =======================
 const PORT = process.env.PORT || 10000;
 
-// =====================
-// VALIDAZIONE ENV
-// =====================
-const REQUIRED_ENV = [
-  "GOOGLE_SERVICE_ACCOUNT_EMAIL",
-  "GOOGLE_PRIVATE_KEY",
-  "GOOGLE_SHEETS_ID",
+const HEADERS = [
+  "id_articolo",
+  "codice",
+  "descrizione_it",
+  "prezzo",
+  "quantita",
+  "categoria",
+  "sottocategoria",
+  "ottimizzazione_approvata",
+  "tags",
+  "descrizione_fr",
+  "descrizione_es",
+  "descrizione_de",
+  "descrizione_en",
+  "data_ultimo_aggiornamento",
 ];
 
-const missing = REQUIRED_ENV.filter(v => !process.env[v]);
-if (missing.length > 0) {
-  console.error("❌ Variabili ambiente mancanti:", missing.join(", "));
+// =======================
+// GOOGLE SHEET INIT
+// =======================
+let sheetStore;
+
+async function initGoogleSheet() {
+  try {
+    sheetStore = new SheetsStore({
+      clientEmail: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+      privateKey: process.env.GOOGLE_PRIVATE_KEY,
+      spreadsheetId: process.env.GOOGLE_SHEETS_ID,
+      sheetName: "foglio1",
+    });
+
+    // 🔍 verifica chiave
+    await sheetStore.testAuth();
+
+    // 📑 verifica / crea intestazioni
+    await ensureHeaders(sheetStore, HEADERS);
+
+    console.log("✅ Google Sheet pronto");
+  } catch (err) {
+    console.error("❌ Errore inizializzazione Google Sheet:", err.message);
+  }
 }
 
-// =====================
-// GOOGLE SHEET SETUP
-// =====================
-let sheets;
+// =======================
+// ROUTES
+// =======================
 
-try {
-  const auth = new google.auth.JWT(
-    process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-    null,
-    process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
-    ["https://www.googleapis.com/auth/spreadsheets"]
-  );
+// Health check
+app.get("/test", (req, res) => {
+  res.json({ ok: true, service: "SyncFED Google Sheet", time: new Date() });
+});
 
-  sheets = google.sheets({ version: "v4", auth });
-  console.log("✅ Google Sheet auth OK");
-} catch (err) {
-  console.error("❌ Errore inizializzazione Google Sheet:", err.message);
-}
-
-// =====================
-// GET TEST (browser)
-// =====================
+// ✅ TEST SCRITTURA GOOGLE SHEET (GET da browser)
 app.get("/api/test-sheet", async (req, res) => {
   try {
     const now = new Date().toISOString();
 
-    const row = [
-      "TEST-GET",
-      "ARTICOLO TEST GET",
-      "Descrizione IT via GET",
-      5.99,
-      1,
-      "Categoria Test",
-      "Sottocategoria Test",
+    const testRow = [
+      `TEST-${Date.now()}`,
+      "CODICE-TEST",
+      "Descrizione IT test",
+      "9.99",
+      "1",
+      "Categoria test",
+      "Sottocategoria test",
       "",
-      "test,get",
-      "Description FR GET",
-      "Description ES GET",
-      "Description DE GET",
-      "Description EN GET",
-      now
+      "tag1,tag2",
+      "Description FR test",
+      "Descripción ES test",
+      "Beschreibung DE test",
+      "Description EN test",
+      now,
     ];
 
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: process.env.GOOGLE_SHEETS_ID,
-      range: "Foglio1!A1",
-      valueInputOption: "USER_ENTERED",
+    await sheetStore.sheets.spreadsheets.values.append({
+      spreadsheetId: sheetStore.spreadsheetId,
+      range: "foglio1!A:N",
+      valueInputOption: "RAW",
       requestBody: {
-        values: [row],
+        values: [testRow],
       },
     });
 
     res.json({
       ok: true,
-      message: "Riga di test GET scritta su Google Sheet",
+      message: "Riga di test scritta correttamente",
+      data: testRow,
     });
   } catch (err) {
-    console.error("❌ GET test-sheet error:", err.message);
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("❌ Test Sheet error:", err.message);
+    res.status(500).json({
+      ok: false,
+      error: err.message,
+    });
   }
 });
 
-// =====================
-// POST TEST (programmatico)
-// =====================
-app.post("/api/test-sheet", async (req, res) => {
-  try {
-    const now = new Date().toISOString();
-
-    const row = [
-      "TEST-POST",
-      "ARTICOLO TEST POST",
-      "Descrizione IT via POST",
-      9.99,
-      1,
-      "Categoria Test",
-      "Sottocategoria Test",
-      "",
-      "test,post",
-      "Description FR POST",
-      "Description ES POST",
-      "Description DE POST",
-      "Description EN POST",
-      now
-    ];
-
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: process.env.GOOGLE_SHEETS_ID,
-      range: "Foglio1!A1",
-      valueInputOption: "USER_ENTERED",
-      requestBody: {
-        values: [row],
-      },
-    });
-
-    res.json({
-      ok: true,
-      message: "Riga di test POST scritta su Google Sheet",
-    });
-  } catch (err) {
-    console.error("❌ POST test-sheet error:", err.message);
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// =====================
-// ROOT
-// =====================
-app.get("/", (req, res) => {
-  res.send("✅ SyncFED Google Sheet attivo");
-});
-
-// =====================
+// =======================
 // START SERVER
-// =====================
+// =======================
+app.listen(PORT, async () => {
+  console.log(`🚀 SyncFED (Google Sheet) avviato sulla porta ${PORT}`);
+  await initGoogleSheet();
+});
+
 app.listen(PORT, () => {
   console.log(`🚀 SyncFED (Google Sheet) avviato sulla porta ${PORT}`);
 });
