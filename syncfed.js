@@ -1,243 +1,186 @@
 import axios from "axios";
-import { parseStringPromise } from "xml2js";
-import { pool } from "./db.js";
+import xml2js from "xml2js";
 import dotenv from "dotenv";
+import { upsertArticoloFromSync } from "./googleSheets.js";
 
 dotenv.config();
 
 const BMAN_URL = process.env.BMAN_URL;
 const BMAN_KEY = process.env.BMAN_KEY;
 
-function buildGetAnagraficheEnvelope(page) {
-  const filtri = JSON.stringify([
-    {
-      chiave: "bmanShop",
-      operatore: "=",
-      valore: "True",
-    },
-  ]);
+if (!BMAN_URL || !BMAN_KEY) {
+  console.warn("⚠️ BMAN_URL o BMAN_KEY non sono impostate nelle variabili ambiente.");
+}
 
-  const xml = `
+const parser = new xml2js.Parser({ explicitArray: false });
+
+async function callBman(pagina = 1) {
+  const soapBody = `
     <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                    xmlns:xsd="http://www.w3.org/2001/XMLSchema"
                    xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
       <soap:Body>
         <getAnagrafiche xmlns="http://cloud.bman.it/">
           <chiave>${BMAN_KEY}</chiave>
-          <filtri>${filtri}</filtri>
-          <ordinamentoCampo>ID</ordinamentoCampo>
-          <ordinamentoDirezione>1</ordinamentoDirezione>
-          <numeroPagina>${page}</numeroPagina>
-          <listaDepositi></listaDepositi>
-          <dettaglioVarianti>false</dettaglioVarianti>
+          <filtro>
+            <chiave>bmanShop</chiave>
+            <operatore>=</operatore>
+            <valore>true</valore>
+          </filtro>
+          <pagina>${pagina}</pagina>
         </getAnagrafiche>
       </soap:Body>
     </soap:Envelope>
-  `.trim();
+  `;
 
-  return xml;
-}
-
-async function callBmanPage(page) {
-  const xml = buildGetAnagraficheEnvelope(page);
-
-  const response = await axios.post(BMAN_URL, xml, {
-    headers: { "Content-Type": "text/xml;charset=UTF-8" },
-    timeout: 60000,
+  const response = await axios.post(BMAN_URL, soapBody, {
+    headers: {
+      "Content-Type": "text/xml;charset=UTF-8",
+    },
+    timeout: 120000,
   });
 
-  const parsed = await parseStringPromise(response.data, { explicitArray: false });
-  const body = parsed["soap:Envelope"]?.["soap:Body"];
-  const result = body?.getAnagraficheResponse?.getAnagraficheResult;
-
-  if (!result) {
-    console.log("⚠ Nessun result in SOAP per pagina", page);
-    return [];
-  }
-
-  let articoli;
-  try {
-    articoli = JSON.parse(result);
-  } catch (err) {
-    console.error("❌ Errore parse JSON getAnagraficheResult pagina", page, err.message);
-    return [];
-  }
-
-  if (!Array.isArray(articoli)) return [];
-  return articoli;
+  return response.data;
 }
 
-function estraiPrezzoNegozio(arrSconti, fallback) {
-  if (!Array.isArray(arrSconti) || arrSconti.length === 0) return fallback;
-  // cerca etichetta/descrizione che contiene "Negozio"
-  const negozio = arrSconti.find(
-    (l) =>
-      (l.Etichetta && l.Etichetta.toLowerCase().includes("negozio")) ||
-      (l.NomeCompleto && l.NomeCompleto.toLowerCase().includes("negozio"))
-  );
-  if (negozio && typeof negozio.prezzo === "number") return negozio.prezzo;
-  return typeof fallback === "number" ? fallback : null;
-}
+async function parseBmanResponse(xml) {
+  const result = await parser.parseStringPromise(xml);
 
-function buildCategorieString(art) {
-  const cats = [];
-  for (let i = 1; i <= 10; i++) {
-    const key = `categoria${i}str`;
-    if (art[key]) cats.push(art[key]);
+  const body = result["soap:Envelope"]?.["soap:Body"];
+  if (body?.["soap:Fault"]) {
+    const fault = body["soap:Fault"];
+    const message = fault.faultstring || "Errore SOAP non specificato";
+    throw new Error(`Bman SOAP fault: ${message}`);
   }
-  return cats.join(" > ");
+
+  const getAnagraficheResponse =
+    body?.getAnagraficheResponse || body?.GetAnagraficheResponse;
+
+  if (!getAnagraficheResponse) {
+    throw new Error("Risposta Bman inattesa: manca getAnagraficheResponse");
+  }
+
+  const getAnagraficheResult =
+    getAnagraficheResponse.getAnagraficheResult ||
+    getAnagraficheResponse.GetAnagraficheResult;
+
+  if (!getAnagraficheResult) {
+    throw new Error("Risposta Bman inattesa: manca getAnagraficheResult");
+  }
+
+  // Il risultato Bman è JSON serializzato in una stringa
+  const jsonString = getAnagraficheResult;
+  const decoded = JSON.parse(jsonString);
+
+  if (!decoded || !Array.isArray(decoded.anagrafiche)) {
+    throw new Error("Struttura anagrafiche non valida nella risposta Bman");
+  }
+
+  return decoded;
 }
 
 function buildDescrizioni(art) {
-  const descrizione_it = art.opzionale12 || art.opzionale2 || "";
-  const descrizione_fr = art.opzionale13 || "";
-  const descrizione_es = art.opzionale15 || "";
-  const descrizione_de = art.opzionale16 || "";
-
-  const blocchi = [];
-  if (descrizione_it) blocchi.push(`IT: ${descrizione_it}`);
-  if (descrizione_fr) blocchi.push(`FR: ${descrizione_fr}`);
-  if (descrizione_es) blocchi.push(`ES: ${descrizione_es}`);
-  if (descrizione_de) blocchi.push(`DE: ${descrizione_de}`);
-
-  const descrizione_html = blocchi.join("\n\n");
-
+  const descrizione_it = (art.descrizione || "").toString().trim();
   return {
     descrizione_it,
-    descrizione_fr,
-    descrizione_es,
-    descrizione_de,
-    descrizione_html,
   };
 }
 
-async function articoloApprovato(codice) {
-  const [rows] = await pool.query(
-    "SELECT ottimizzazione_approvata FROM articoli_syncfed WHERE codice = ?",
-    [codice]
-  );
-  if (!rows.length) return false;
-  const val = rows[0].ottimizzazione_approvata;
-  return val && String(val).toUpperCase() === "SI";
+function buildCategorieString(art) {
+  const cat1 = (art.categoria || "").toString().trim();
+  const cat2 = (art.categoria2 || "").toString().trim();
+  const parts = [];
+  if (cat1) parts.push(cat1);
+  if (cat2) parts.push(cat2);
+  return parts.join(" > ");
+}
+
+function calcolaGiacenze(art) {
+  const g = Number(art.disponibilita ?? art.giacenza ?? 0);
+  if (Number.isNaN(g)) return 0;
+  return g;
+}
+
+function buildPrezzo(art) {
+  const p = Number(art.prezzoVendita ?? art.prezzo ?? 0);
+  if (Number.isNaN(p)) return 0;
+  return p;
+}
+
+function buildTag(art) {
+  const parts = [];
+  if (art.marca) parts.push(art.marca);
+  if (art.categoria) parts.push(art.categoria);
+  if (art.categoria2) parts.push(art.categoria2);
+  return parts.join(", ");
 }
 
 async function salvaArticolo(art) {
-  const codice = art.codice;
-  if (!codice) return;
-
-  // se ottimizzazione approvata, non toccare il record
-  if (await articoloApprovato(codice)) {
-    console.log(`⏭ Skip ${codice} (ottimizzazione_approvata = SI)`);
-    return;
-  }
-
-  const marca = art.opzionale1 || null;
-  const titolo = art.opzionale2 || null;
-
-  const {
-    descrizione_it,
-    descrizione_fr,
-    descrizione_es,
-    descrizione_de,
-    descrizione_html,
-  } = buildDescrizioni(art);
-
-  const prezzo = estraiPrezzoNegozio(art.arrSconti, art.przc);
-  const iva = art.iva ?? null;
-  const tag = art.tags || "";
-  const categorie = buildCategorieString(art);
-  const giacenze = art.disponibilita ?? art.giacenza ?? 0;
-  const foto_principale =
-    (Array.isArray(art.arrFoto) && art.arrFoto.length > 0 && art.arrFoto[0]) || null;
-
-  const sql = `
-    INSERT INTO articoli_syncfed
-    (
-      codice,
-      marca,
-      titolo,
-      descrizione_it,
-      descrizione_fr,
-      descrizione_es,
-      descrizione_de,
-      descrizione_html,
-      prezzo,
-      iva,
-      tag,
-      categorie,
-      giacenze,
-      foto_principale
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON DUPLICATE KEY UPDATE
-      marca = VALUES(marca),
-      titolo = VALUES(titolo),
-      descrizione_it = VALUES(descrizione_it),
-      descrizione_fr = VALUES(descrizione_fr),
-      descrizione_es = VALUES(descrizione_es),
-      descrizione_de = VALUES(descrizione_de),
-      descrizione_html = VALUES(descrizione_html),
-      prezzo = VALUES(prezzo),
-      iva = VALUES(iva),
-      tag = VALUES(tag),
-      categorie = VALUES(categorie),
-      giacenze = VALUES(giacenze),
-      foto_principale = VALUES(foto_principale)
-  `;
-
   try {
-    await pool.query(sql, [
-      codice,
-      marca,
-      titolo,
-      descrizione_it,
-      descrizione_fr,
-      descrizione_es,
-      descrizione_de,
-      descrizione_html,
-      prezzo,
-      iva,
-      tag,
-      categorie,
-      giacenze,
-      foto_principale,
-    ]);
+    await upsertArticoloFromSync(art);
   } catch (err) {
-    console.error("❌ Errore salvataggio articolo", codice, err.message);
+    console.error("❌ Errore salvataggio articolo", art.codice, err.message);
+    throw err;
   }
 }
 
 export async function syncBman() {
-  console.log("🚀 Avvio sync Bman -> MySQL...");
-
-  let page = 1;
-  const maxPages = 200;
-  let totale = 0;
-
-  while (page <= maxPages) {
-    console.log(`🔎 Leggo pagina ${page}...`);
-    let articoli;
-    try {
-      articoli = await callBmanPage(page);
-    } catch (err) {
-      console.error("❌ Errore chiamata Bman pagina", page, err.message);
-      break;
-    }
-
-    if (!articoli.length) {
-      console.log("✅ Nessun articolo sulla pagina", page, "- fine.");
-      break;
-    }
-
-    for (const art of articoli) {
-      await salvaArticolo(art);
-      totale++;
-    }
-
-    console.log(`📦 Pagina ${page} sincronizzata (${articoli.length} articoli)`);
-    page++;
+  if (!BMAN_URL || !BMAN_KEY) {
+    throw new Error("BMAN_URL o BMAN_KEY non configurate");
   }
 
-  console.log(`🏁 Sync completata. Articoli processati: ${totale}`);
-  return { totale };
+  console.log("🚚 Avvio sincronizzazione Bman -> Google Sheet...");
+
+  let pagina = 1;
+  let totaleImportati = 0;
+  let altrePagine = true;
+
+  while (altrePagine) {
+    console.log(`📦 Recupero pagina ${pagina} da Bman...`);
+    const xml = await callBman(pagina);
+    const decoded = await parseBmanResponse(xml);
+
+    const anagrafiche = decoded.anagrafiche || [];
+    if (!anagrafiche.length) {
+      console.log("✅ Nessuna altra anagrafica trovata, fine paginazione.");
+      break;
+    }
+
+    for (const art of anagrafiche) {
+      const codice = (art.codice || "").toString().trim();
+      if (!codice) continue;
+
+      const { descrizione_it } = buildDescrizioni(art);
+      const categorieStr = buildCategorieString(art);
+      const [categoria, sottocategoria] = categorieStr.split(" > ");
+      const prezzo = buildPrezzo(art);
+      const quantita = calcolaGiacenze(art);
+      const tags = buildTag(art);
+
+      await salvaArticolo({
+        id_articolo: codice,
+        codice,
+        descrizione_it,
+        prezzo,
+        quantita,
+        categoria: categoria || "",
+        sottocategoria: sottocategoria || "",
+        tags,
+      });
+
+      totaleImportati++;
+    }
+
+    if (decoded.paginaCorrente >= decoded.totPagine) {
+      altrePagine = false;
+    } else {
+      pagina++;
+    }
+  }
+
+  console.log(`✅ Sync Bman completata. Articoli importati/aggiornati: ${totaleImportati}`);
+
+  return {
+    totali: totaleImportati,
+  };
 }
