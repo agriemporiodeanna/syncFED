@@ -5,6 +5,16 @@ import { google } from "googleapis";
 
 dotenv.config();
 
+const store = new SheetsStore({
+  clientEmail: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+  privateKey: process.env.GOOGLE_PRIVATE_KEY,
+  spreadsheetId: process.env.GOOGLE_SHEETS_ID,
+  sheetName: "foglio1",
+});
+
+await store.testAuth(); // 🔥 questo ti salva ore di debug
+
+
 const app = express();
 app.use(cors());
 app.use(express.json());
