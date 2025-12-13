@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import { google } from "googleapis";
+import { parseStringPromise } from "xml2js";
 
 dotenv.config();
 
@@ -12,7 +13,7 @@ app.use(express.json());
 const PORT = process.env.PORT || 10000;
 
 // =====================
-// VALIDAZIONE ENV
+// ENV CHECK
 // =====================
 const REQUIRED_ENV = [
   "GOOGLE_SERVICE_ACCOUNT_BASE64",
@@ -31,11 +32,9 @@ if (missing.length > 0) {
 // GOOGLE SHEET AUTH
 // =====================
 let sheets;
-
 try {
   const credentials = JSON.parse(
-    Buffer.from(process.env.GOOGLE_SERVICE_ACCOUNT_BASE64, "base64")
-      .toString("utf8")
+    Buffer.from(process.env.GOOGLE_SERVICE_ACCOUNT_BASE64, "base64").toString("utf8")
   );
 
   const auth = new google.auth.GoogleAuth({
@@ -50,135 +49,71 @@ try {
 }
 
 // =====================
-// SCHEMA COLONNE
+// SOAP BUILDER
 // =====================
-const CAMPI_BMAN = [
-  "Codice",
-  "TipoCodice",
-  "Categoria1",
-  "Categoria2",
-  "Brand",
-  "Titolo",
-  "Tag",
-  "DescrizioneIT",
-  "DescrizioneHTML",
-  "Immagine1",
-  "Immagine2",
-  "Immagine3",
-  "Immagine4",
-  "Immagine5",
-  "AltezzaCM",
-  "LarghezzaCM",
-  "ProfonditaCM",
-  "PesoKG",
-  "UnitaMisura",
-  "Sottoscorta",
-  "RiordinoMinimo",
-  "Script",
-  "Stato",
-  "UltimoSync"
-];
-
-// =====================
-// STEP 1 – SCHEMA
-// =====================
-app.get("/step1/schema", async (req, res) => {
-  try {
-    const spreadsheetId = process.env.GOOGLE_SHEETS_ID;
-    const range = "PRODOTTI_BMAN!1:1";
-
-    const read = await sheets.spreadsheets.values.get({ spreadsheetId, range });
-    const headers = read.data.values ? read.data.values[0] : [];
-
-    if (headers.length === 0) {
-      await sheets.spreadsheets.values.update({
-        spreadsheetId,
-        range,
-        valueInputOption: "RAW",
-        requestBody: { values: [CAMPI_BMAN] }
-      });
-      return res.json({ ok: true, azione: "create" });
-    }
-
-    const mancanti = CAMPI_BMAN.filter(c => !headers.includes(c));
-    if (mancanti.length > 0) {
-      await sheets.spreadsheets.values.update({
-        spreadsheetId,
-        range,
-        valueInputOption: "RAW",
-        requestBody: { values: [[...headers, ...mancanti]] }
-      });
-      return res.json({ ok: true, azione: "update", aggiunte: mancanti });
-    }
-
-    res.json({ ok: true, azione: "none" });
-
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
+function buildGetAnagraficheSOAP() {
+  return `
+<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+               xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+               xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <getAnagrafiche xmlns="http://tempuri.org/">
+      <chiave>${process.env.BMAN_API_KEY}</chiave>
+      <filtri>
+        <Filtro>
+          <chiave>${process.env.BMAN_SCRIPT_FIELD}</chiave>
+          <operatore>=</operatore>
+          <valore>SI</valore>
+        </Filtro>
+      </filtri>
+      <ordinamentoCampo>ID</ordinamentoCampo>
+      <ordinamentoDirezione>1</ordinamentoDirezione>
+      <numeroPagina>1</numeroPagina>
+      <listaDepositi></listaDepositi>
+      <dettaglioVarianti>false</dettaglioVarianti>
+    </getAnagrafiche>
+  </soap:Body>
+</soap:Envelope>`;
+}
 
 // =====================
-// STEP 2 – GET ANAGRAFICHE BMAN (ASMX)
+// STEP 2 – SOAP CALL BMAN
 // =====================
 app.get("/step2/import-bman", async (req, res) => {
   try {
-    const payload = {
-      chiave: process.env.BMAN_API_KEY,
-      filtri: [
-        {
-          chiave: process.env.BMAN_SCRIPT_FIELD,
-          operatore: "=",
-          valore: "SI"
-        }
-      ],
-      ordinamentoCampo: "ID",
-      ordinamentoDirezione: 1,
-      numeroPagina: 1,
-      listaDepositi: "",
-      dettaglioVarianti: false
-    };
+    const soapXML = buildGetAnagraficheSOAP();
 
     const response = await fetch(
       `${process.env.BMAN_BASE_URL}/getAnagrafiche`,
       {
         method: "POST",
         headers: {
-          "Content-Type": "application/json"
+          "Content-Type": "text/xml; charset=utf-8",
+          "SOAPAction": "http://tempuri.org/getAnagrafiche"
         },
-        body: JSON.stringify(payload)
+        body: soapXML
       }
     );
 
-    const text = await response.text();
+    const xml = await response.text();
 
-    if (!response.ok) {
-      console.error(text);
-      return res.status(500).json({
-        ok: false,
-        error: `Bman HTTP ${response.status}`
-      });
-    }
+    const parsed = await parseStringPromise(xml, { explicitArray: false });
 
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      console.error(text.substring(0, 500));
-      return res.status(500).json({
-        ok: false,
-        error: "Risposta Bman non JSON"
-      });
-    }
+    const result =
+      parsed["soap:Envelope"]["soap:Body"]["getAnagraficheResponse"]["getAnagraficheResult"];
 
-    return res.json({
+    // ⚠️ Bman restituisce JSON *dentro* XML
+    const data = JSON.parse(result);
+
+    res.json({
       ok: true,
       prodottiRicevuti: data.length,
       esempio: data[0] || null
     });
 
   } catch (err) {
-    console.error("❌ STEP 2 error:", err.message);
+    console.error("❌ SOAP Bman error:", err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -187,7 +122,7 @@ app.get("/step2/import-bman", async (req, res) => {
 // ROOT
 // =====================
 app.get("/", (req, res) => {
-  res.send("✅ SyncFED attivo (Bman ASMX)");
+  res.send("✅ SyncFED attivo (Bman SOAP)");
 });
 
 // =====================
@@ -197,4 +132,3 @@ app.listen(PORT, () => {
   console.log(`🚀 SyncFED avviato sulla porta ${PORT}`);
 });
 
-  console.log(`🚀 SyncFED avviato sulla porta ${PORT}`);
