@@ -1,4 +1,4 @@
-export const CAMPI_BMAN = [
+const CAMPI_BMAN = [
   "Tipo",
   "Codice",
   "TipoCodice",
@@ -17,8 +17,14 @@ export const CAMPI_BMAN = [
   "DescrizioneES",
   "DescrizioneDE",
   "DescrizioneHTML",
-  "ImmaginePrincipale",
-  "ImmaginiExtra",
+
+  // IMMAGINI (fino a 5)
+  "Immagine1",
+  "Immagine2",
+  "Immagine3",
+  "Immagine4",
+  "Immagine5",
+
   "AltezzaCM",
   "LarghezzaCM",
   "ProfonditaCM",
@@ -29,3 +35,4 @@ export const CAMPI_BMAN = [
   "Stato",
   "UltimoSync"
 ];
+
