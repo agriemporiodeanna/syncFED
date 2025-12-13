@@ -36,9 +36,9 @@ if (missing.length) {
 let sheets = null;
 
 if (
+  ENV.GOOGLE_SHEET_ID &&
   ENV.GOOGLE_CLIENT_EMAIL &&
-  ENV.GOOGLE_PRIVATE_KEY_BASE64 &&
-  ENV.GOOGLE_SHEET_ID
+  ENV.GOOGLE_PRIVATE_KEY_BASE64
 ) {
   try {
     const auth = new google.auth.JWT(
@@ -53,87 +53,12 @@ if (
     sheets = google.sheets({ version: "v4", auth });
     console.log("✅ Google Sheet auth OK");
   } catch (err) {
-    console.error("❌ Errore inizializzazione Google Sheet:", err.message);
+    console.error("❌ Google Sheet init error:", err.message);
   }
 }
 
 /* ===============================
-   SCHEMA COLONNE
-================================ */
-const SHEET_COLUMNS = [
-  "Tipo",
-  "Codice",
-  "TipoCodice",
-  "Categoria1",
-  "Categoria2",
-  "Brand",
-  "Titolo",
-  "Etichetta",
-  "Vintage",
-  "Script",
-  "Magazzino",
-  "Tag",
-  "DescrizioneIT",
-  "DescrizioneFR",
-  "DescrizioneEN",
-  "DescrizioneES",
-  "DescrizioneDE",
-  "DescrizioneHTML",
-  "Immagine1",
-  "Immagine2",
-  "Immagine3",
-  "Immagine4",
-  "Immagine5",
-  "AltezzaCM",
-  "LarghezzaCM",
-  "ProfonditaCM",
-  "PesoKG",
-  "UnitaMisura",
-  "Sottoscorta",
-  "RiordinoMinimo",
-  "Stato",
-  "UltimoSync"
-];
-
-/* ===============================
-   STEP 1 – SCHEMA GOOGLE SHEET
-================================ */
-app.get("/step1/schema", async (req, res) => {
-  if (!sheets) {
-    return res.json({
-      ok: false,
-      error: "Google Sheet non configurato"
-    });
-  }
-
-  try {
-    const range = "A1:ZZ1";
-    const current = await sheets.spreadsheets.values.get({
-      spreadsheetId: ENV.GOOGLE_SHEET_ID,
-      range
-    });
-
-    const existing = current.data.values?.[0] || [];
-
-    if (JSON.stringify(existing) === JSON.stringify(SHEET_COLUMNS)) {
-      return res.json({ ok: true, azione: "none", colonne: existing });
-    }
-
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: ENV.GOOGLE_SHEET_ID,
-      range: "A1",
-      valueInputOption: "RAW",
-      requestBody: { values: [SHEET_COLUMNS] }
-    });
-
-    res.json({ ok: true, azione: "create", colonne: SHEET_COLUMNS });
-  } catch (err) {
-    res.json({ ok: false, error: err.message });
-  }
-});
-
-/* ===============================
-   STEP 2 – IMPORT DA BMAN
+   STEP 2 – IMPORT DA BMAN (SOAP FIX DEFINITIVO)
 ================================ */
 app.get("/step2/import-bman", async (req, res) => {
   if (!ENV.BMAN_BASE_URL || !ENV.BMAN_API_KEY || !ENV.BMAN_SCRIPT_FIELD) {
@@ -144,30 +69,24 @@ app.get("/step2/import-bman", async (req, res) => {
   }
 
   try {
-    const filtri = [
-      {
-        chiave: ENV.BMAN_SCRIPT_FIELD,
-        operatore: "=",
-        valore: "si"
-      }
-    ];
+    // JSON MINIFICATO (OBBLIGATORIO PER BMAN)
+    const filtriJson =
+      `[{"chiave":"${ENV.BMAN_SCRIPT_FIELD}","operatore":"=","valore":"si"}]`;
 
-    const soapBody = `
-<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-               xmlns:xsd="http://www.w3.org/2001/XMLSchema"
-               xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
-  <soap:Body>
-    <getAnagrafiche xmlns="http://tempuri.org/">
-      <chiave>${ENV.BMAN_API_KEY}</chiave>
-      <filtri><![CDATA[${JSON.stringify(filtri)}]]></filtri>
-      <ordinamentoCampo>ID</ordinamentoCampo>
-      <ordinamentoDirezione>1</ordinamentoDirezione>
-      <numeroPagina>1</numeroPagina>
-      <listaDepositi><![CDATA[]]></listaDepositi>
-      <dettaglioVarianti>false</dettaglioVarianti>
-    </getAnagrafiche>
-  </soap:Body>
+    const soapBody =
+`<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+<soap:Body>
+<getAnagrafiche xmlns="http://tempuri.org/">
+<chiave>${ENV.BMAN_API_KEY}</chiave>
+<filtri><![CDATA[${filtriJson}]]></filtri>
+<ordinamentoCampo>ID</ordinamentoCampo>
+<ordinamentoDirezione>1</ordinamentoDirezione>
+<numeroPagina>1</numeroPagina>
+<listaDepositi><![CDATA[]]></listaDepositi>
+<dettaglioVarianti>false</dettaglioVarianti>
+</getAnagrafiche>
+</soap:Body>
 </soap:Envelope>`;
 
     const response = await fetch(`${ENV.BMAN_BASE_URL}/bmanapi.asmx`, {
@@ -181,12 +100,17 @@ app.get("/step2/import-bman", async (req, res) => {
 
     const text = await response.text();
 
+    if (text.includes("Unquoted attribute value")) {
+      throw new Error("SOAP non valido per parser ASP.NET Bman");
+    }
+
     res.json({
       ok: true,
-      bytes: text.length,
-      preview: text.substring(0, 400)
+      lunghezzaRisposta: text.length,
+      anteprima: text.substring(0, 600)
     });
   } catch (err) {
+    console.error("❌ SOAP Bman error:", err.message);
     res.json({ ok: false, error: err.message });
   }
 });
