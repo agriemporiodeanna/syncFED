@@ -258,5 +258,4 @@ app.listen(PORT, () => {
 });
 
   console.log(`🚀 SyncFED (Google Sheet) avviato sulla porta ${PORT}`);
-});
 
