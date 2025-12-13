@@ -1,58 +1,132 @@
 import express from "express";
-import cors from "cors";
-import dotenv from "dotenv";
+import fetch from "node-fetch";
 import { google } from "googleapis";
-import { parseStringPromise } from "xml2js";
+import dotenv from "dotenv";
 
 dotenv.config();
 
 const app = express();
-app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 
-// =====================
-// ENV CHECK
-// =====================
+/* ===============================
+   CONTROLLI VARIABILI AMBIENTE
+================================ */
 const REQUIRED_ENV = [
-  "GOOGLE_SERVICE_ACCOUNT_BASE64",
-  "GOOGLE_SHEETS_ID",
+  "GOOGLE_SHEET_ID",
+  "GOOGLE_CLIENT_EMAIL",
+  "GOOGLE_PRIVATE_KEY_BASE64",
   "BMAN_BASE_URL",
   "BMAN_API_KEY",
   "BMAN_SCRIPT_FIELD"
 ];
 
 const missing = REQUIRED_ENV.filter(v => !process.env[v]);
-if (missing.length > 0) {
+if (missing.length) {
   console.error("❌ Variabili ambiente mancanti:", missing.join(", "));
 }
 
-// =====================
-// GOOGLE SHEET AUTH
-// =====================
-let sheets;
-try {
-  const credentials = JSON.parse(
-    Buffer.from(process.env.GOOGLE_SERVICE_ACCOUNT_BASE64, "base64").toString("utf8")
-  );
+/* ===============================
+   GOOGLE SHEET AUTH
+================================ */
+const auth = new google.auth.JWT(
+  process.env.GOOGLE_CLIENT_EMAIL,
+  null,
+  Buffer.from(process.env.GOOGLE_PRIVATE_KEY_BASE64, "base64")
+    .toString("utf8")
+    .replace(/\\n/g, "\n"),
+  ["https://www.googleapis.com/auth/spreadsheets"]
+);
 
-  const auth = new google.auth.GoogleAuth({
-    credentials,
-    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-  });
+const sheets = google.sheets({ version: "v4", auth });
 
-  sheets = google.sheets({ version: "v4", auth });
-  console.log("✅ Google Sheet auth OK");
-} catch (err) {
-  console.error("❌ Google auth error:", err.message);
-}
+console.log("✅ Google Sheet auth OK");
 
-// =====================
-// SOAP BUILDER
-// =====================
-function buildGetAnagraficheSOAP() {
-  return `
+/* ===============================
+   SCHEMA COLONNE (STEP 1)
+================================ */
+const SHEET_COLUMNS = [
+  "Tipo",
+  "Codice",
+  "TipoCodice",
+  "Categoria1",
+  "Categoria2",
+  "Brand",
+  "Titolo",
+  "Etichetta",
+  "Vintage",
+  "Script",
+  "Magazzino",
+  "Tag",
+  "DescrizioneIT",
+  "DescrizioneFR",
+  "DescrizioneEN",
+  "DescrizioneES",
+  "DescrizioneDE",
+  "DescrizioneHTML",
+  "Immagine1",
+  "Immagine2",
+  "Immagine3",
+  "Immagine4",
+  "Immagine5",
+  "AltezzaCM",
+  "LarghezzaCM",
+  "ProfonditaCM",
+  "PesoKG",
+  "UnitaMisura",
+  "Sottoscorta",
+  "RiordinoMinimo",
+  "Stato",
+  "UltimoSync"
+];
+
+/* ===============================
+   STEP 1 – CREA / ALLINEA SCHEMA
+================================ */
+app.get("/step1/schema", async (req, res) => {
+  try {
+    const range = "A1:ZZ1";
+    const current = await sheets.spreadsheets.values.get({
+      spreadsheetId: process.env.GOOGLE_SHEET_ID,
+      range
+    });
+
+    const existing = current.data.values?.[0] || [];
+
+    if (JSON.stringify(existing) === JSON.stringify(SHEET_COLUMNS)) {
+      return res.json({ ok: true, azione: "none", colonne: existing });
+    }
+
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: process.env.GOOGLE_SHEET_ID,
+      range: "A1",
+      valueInputOption: "RAW",
+      requestBody: {
+        values: [SHEET_COLUMNS]
+      }
+    });
+
+    res.json({ ok: true, azione: "create", colonne: SHEET_COLUMNS });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+/* ===============================
+   STEP 2 – IMPORT DA BMAN
+================================ */
+app.get("/step2/import-bman", async (req, res) => {
+  try {
+    const filtri = [
+      {
+        chiave: process.env.BMAN_SCRIPT_FIELD, // es: opzionale11
+        operatore: "=",
+        valore: "si"
+      }
+    ];
+
+    const soapBody = `
 <?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                xmlns:xsd="http://www.w3.org/2001/XMLSchema"
@@ -60,75 +134,54 @@ function buildGetAnagraficheSOAP() {
   <soap:Body>
     <getAnagrafiche xmlns="http://tempuri.org/">
       <chiave>${process.env.BMAN_API_KEY}</chiave>
-      <filtri>
-        <Filtro>
-          <chiave>${process.env.BMAN_SCRIPT_FIELD}</chiave>
-          <operatore>=</operatore>
-          <valore>SI</valore>
-        </Filtro>
-      </filtri>
+      <filtri><![CDATA[
+        ${JSON.stringify(filtri)}
+      ]]></filtri>
       <ordinamentoCampo>ID</ordinamentoCampo>
       <ordinamentoDirezione>1</ordinamentoDirezione>
       <numeroPagina>1</numeroPagina>
-      <listaDepositi></listaDepositi>
+      <listaDepositi><![CDATA[]]></listaDepositi>
       <dettaglioVarianti>false</dettaglioVarianti>
     </getAnagrafiche>
   </soap:Body>
-</soap:Envelope>`;
-}
-
-// =====================
-// STEP 2 – SOAP CALL BMAN
-// =====================
-app.get("/step2/import-bman", async (req, res) => {
-  try {
-    const soapXML = buildGetAnagraficheSOAP();
+</soap:Envelope>
+`;
 
     const response = await fetch(
-      `${process.env.BMAN_BASE_URL}/getAnagrafiche`,
+      `${process.env.BMAN_BASE_URL}/bmanapi.asmx`,
       {
         method: "POST",
         headers: {
           "Content-Type": "text/xml; charset=utf-8",
           "SOAPAction": "http://tempuri.org/getAnagrafiche"
         },
-        body: soapXML
+        body: soapBody
       }
     );
 
-    const xml = await response.text();
-
-    const parsed = await parseStringPromise(xml, { explicitArray: false });
-
-    const result =
-      parsed["soap:Envelope"]["soap:Body"]["getAnagraficheResponse"]["getAnagraficheResult"];
-
-    // ⚠️ Bman restituisce JSON *dentro* XML
-    const data = JSON.parse(result);
+    const text = await response.text();
 
     res.json({
       ok: true,
-      prodottiRicevuti: data.length,
-      esempio: data[0] || null
+      rawLength: text.length,
+      preview: text.substring(0, 500)
     });
 
   } catch (err) {
-    console.error("❌ SOAP Bman error:", err.message);
-    res.status(500).json({ ok: false, error: err.message });
+    res.json({ ok: false, error: err.message });
   }
 });
 
-// =====================
-// ROOT
-// =====================
+/* ===============================
+   ROOT
+================================ */
 app.get("/", (req, res) => {
-  res.send("✅ SyncFED attivo (Bman SOAP)");
+  res.send("✅ SyncFED Google Sheet attivo");
 });
 
-// =====================
-// START
-// =====================
+/* ===============================
+   START SERVER
+================================ */
 app.listen(PORT, () => {
   console.log(`🚀 SyncFED avviato sulla porta ${PORT}`);
 });
-
