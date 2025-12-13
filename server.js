@@ -15,8 +15,7 @@ const PORT = process.env.PORT || 10000;
 // VALIDAZIONE ENV
 // =====================
 const REQUIRED_ENV = [
-  "GOOGLE_SERVICE_ACCOUNT_EMAIL",
-  "GOOGLE_PRIVATE_KEY",
+  "GOOGLE_SERVICE_ACCOUNT_BASE64",
   "GOOGLE_SHEETS_ID",
 ];
 
@@ -26,20 +25,27 @@ if (missing.length > 0) {
 }
 
 // =====================
-// GOOGLE SHEET SETUP
+// GOOGLE SHEET SETUP (BASE64 SAFE)
 // =====================
 let sheets;
 
 try {
+  const credentials = JSON.parse(
+    Buffer.from(
+      process.env.GOOGLE_SERVICE_ACCOUNT_BASE64,
+      "base64"
+    ).toString("utf8")
+  );
+
   const auth = new google.auth.JWT(
-    process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+    credentials.client_email,
     null,
-    process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+    credentials.private_key,
     ["https://www.googleapis.com/auth/spreadsheets"]
   );
 
   sheets = google.sheets({ version: "v4", auth });
-  console.log("✅ Google Sheet auth OK");
+  console.log("✅ Google Sheet auth OK (BASE64)");
 } catch (err) {
   console.error("❌ Errore inizializzazione Google Sheet:", err.message);
 }
@@ -87,7 +93,6 @@ app.get("/step1/schema", async (req, res) => {
     const spreadsheetId = process.env.GOOGLE_SHEETS_ID;
     const range = "PRODOTTI_BMAN!1:1";
 
-    // Legge intestazioni attuali
     const read = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range,
@@ -97,7 +102,7 @@ app.get("/step1/schema", async (req, res) => {
       ? read.data.values[0]
       : [];
 
-    // Caso: foglio vuoto
+    // Foglio vuoto → crea intestazioni
     if (headersAttuali.length === 0) {
       await sheets.spreadsheets.values.update({
         spreadsheetId,
@@ -115,7 +120,7 @@ app.get("/step1/schema", async (req, res) => {
       });
     }
 
-    // Colonne mancanti
+    // Aggiunge solo colonne mancanti
     const mancanti = CAMPI_BMAN.filter(
       c => !headersAttuali.includes(c)
     );
@@ -156,92 +161,6 @@ app.get("/step1/schema", async (req, res) => {
 });
 
 // =====================
-// GET TEST (browser)
-// =====================
-app.get("/api/test-sheet", async (req, res) => {
-  try {
-    const now = new Date().toISOString();
-
-    const row = [
-      "TEST-GET",
-      "ARTICOLO TEST GET",
-      "Descrizione IT via GET",
-      5.99,
-      1,
-      "Categoria Test",
-      "Sottocategoria Test",
-      "",
-      "test,get",
-      "Description FR GET",
-      "Description ES GET",
-      "Description DE GET",
-      "Description EN GET",
-      now
-    ];
-
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: process.env.GOOGLE_SHEETS_ID,
-      range: "Foglio1!A1",
-      valueInputOption: "USER_ENTERED",
-      requestBody: {
-        values: [row],
-      },
-    });
-
-    res.json({
-      ok: true,
-      message: "Riga di test GET scritta su Google Sheet",
-    });
-  } catch (err) {
-    console.error("❌ GET test-sheet error:", err.message);
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// =====================
-// POST TEST (programmatico)
-// =====================
-app.post("/api/test-sheet", async (req, res) => {
-  try {
-    const now = new Date().toISOString();
-
-    const row = [
-      "TEST-POST",
-      "ARTICOLO TEST POST",
-      "Descrizione IT via POST",
-      9.99,
-      1,
-      "Categoria Test",
-      "Sottocategoria Test",
-      "",
-      "test,post",
-      "Description FR POST",
-      "Description ES POST",
-      "Description DE POST",
-      "Description EN POST",
-      now
-    ];
-
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: process.env.GOOGLE_SHEETS_ID,
-      range: "Foglio1!A1",
-      valueInputOption: "USER_ENTERED",
-      requestBody: {
-        values: [row],
-      },
-    });
-
-    res.json({
-      ok: true,
-      message: "Riga di test POST scritta su Google Sheet",
-    });
-  } catch (err) {
-    console.error("❌ POST test-sheet error:", err.message);
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// =====================
 // ROOT
 // =====================
 app.get("/", (req, res) => {
@@ -254,3 +173,4 @@ app.get("/", (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 SyncFED (Google Sheet) avviato sulla porta ${PORT}`);
 });
+
