@@ -198,5 +198,3 @@ app.listen(PORT, () => {
 });
 
   console.log(`🚀 SyncFED avviato sulla porta ${PORT}`);
-});
-
