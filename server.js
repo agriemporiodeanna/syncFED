@@ -135,106 +135,47 @@ app.get("/step1/schema", async (req, res) => {
 });
 
 // =====================
-// STEP 2 – IMPORT BMAN
+// STEP 2 – IMPORT BMAN (ROBUSTO)
 // =====================
 app.get("/step2/import-bman", async (req, res) => {
   try {
     const response = await fetch("https://api.bman.it/prodotti", {
       headers: {
         "x-api-key": process.env.BMAN_API_KEY,
-        "Content-Type": "application/json"
+        "Accept": "application/json"
       }
     });
 
-    const prodotti = await response.json();
+    const bodyText = await response.text();
+
+    if (!response.ok) {
+      console.error("❌ Bman HTTP error:", response.status);
+      console.error(bodyText.substring(0, 300));
+      return res.status(500).json({
+        ok: false,
+        error: `Errore Bman HTTP ${response.status}`
+      });
+    }
+
+    let prodotti;
+    try {
+      prodotti = JSON.parse(bodyText);
+    } catch (e) {
+      console.error("❌ Bman NON restituisce JSON");
+      console.error(bodyText.substring(0, 300));
+      return res.status(500).json({
+        ok: false,
+        error: "Risposta Bman non in formato JSON"
+      });
+    }
+
     const daImportare = prodotti.filter(p => p.script === "SI");
 
-    if (daImportare.length === 0) {
-      return res.json({ ok: true, message: "Nessun prodotto Script = SI" });
-    }
-
-    const spreadsheetId = process.env.GOOGLE_SHEETS_ID;
-    const sheetName = "PRODOTTI_BMAN";
-
-    const read = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: `${sheetName}!A2:ZZ`
-    });
-
-    const rows = read.data.values || [];
-    const idxCodice = CAMPI_BMAN.indexOf("Codice");
-
-    const index = {};
-    rows.forEach((r, i) => {
-      if (r[idxCodice]) index[r[idxCodice]] = i + 2;
-    });
-
-    const now = new Date().toISOString();
-    const updates = [];
-    const appends = [];
-
-    for (const p of daImportare) {
-      const row = CAMPI_BMAN.map(c => {
-        switch (c) {
-          case "Codice": return p.codice;
-          case "Tipo": return p.tipo;
-          case "TipoCodice": return p.tipo_codice;
-          case "Categoria1": return p.categoria_1;
-          case "Categoria2": return p.categoria_2;
-          case "Brand": return p.brand;
-          case "Titolo": return p.titolo;
-          case "Script": return p.script;
-          case "Tag": return (p.tag || []).join(",");
-          case "DescrizioneIT": return p.descrizione?.it || "";
-          case "DescrizioneFR": return p.descrizione?.fr || "";
-          case "DescrizioneEN": return p.descrizione?.en || "";
-          case "DescrizioneES": return p.descrizione?.es || "";
-          case "DescrizioneDE": return p.descrizione?.de || "";
-          case "DescrizioneHTML": return p.descrizione_html || "";
-          case "Immagine1": return p.immagini?.[0] || "";
-          case "Immagine2": return p.immagini?.[1] || "";
-          case "Immagine3": return p.immagini?.[2] || "";
-          case "Immagine4": return p.immagini?.[3] || "";
-          case "Immagine5": return p.immagini?.[4] || "";
-          case "Stato": return "In lavorazione";
-          case "UltimoSync": return now;
-          default: return "";
-        }
-      });
-
-      if (index[p.codice]) {
-        updates.push({
-          range: `${sheetName}!A${index[p.codice]}:ZZ${index[p.codice]}`,
-          values: [row]
-        });
-      } else {
-        appends.push(row);
-      }
-    }
-
-    for (const u of updates) {
-      await sheets.spreadsheets.values.update({
-        spreadsheetId,
-        range: u.range,
-        valueInputOption: "RAW",
-        requestBody: { values: u.values }
-      });
-    }
-
-    if (appends.length > 0) {
-      await sheets.spreadsheets.values.append({
-        spreadsheetId,
-        range: `${sheetName}!A1`,
-        valueInputOption: "RAW",
-        requestBody: { values: appends }
-      });
-    }
-
-    res.json({
+    // ⚠️ Per ora ci fermiamo qui (solo test lettura)
+    return res.json({
       ok: true,
-      importati: daImportare.length,
-      aggiornati: updates.length,
-      nuovi: appends.length
+      prodottiTotali: prodotti.length,
+      scriptSI: daImportare.length
     });
 
   } catch (err) {
@@ -256,6 +197,4 @@ app.get("/", (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 SyncFED avviato sulla porta ${PORT}`);
 });
-
-  console.log(`🚀 SyncFED (Google Sheet) avviato sulla porta ${PORT}`);
 
