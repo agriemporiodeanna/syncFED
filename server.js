@@ -26,7 +26,7 @@ if (missing.length > 0) {
 }
 
 // =====================
-// GOOGLE SHEET SETUP (BASE64 + GoogleAuth SAFE)
+// GOOGLE SHEET SETUP (BASE64 + GoogleAuth)
 // =====================
 let sheets;
 
@@ -50,7 +50,7 @@ try {
 }
 
 // =====================
-// SCHEMA COLONNE (STEP 1)
+// SCHEMA COLONNE
 // =====================
 const CAMPI_BMAN = [
   "Tipo",
@@ -88,7 +88,7 @@ const CAMPI_BMAN = [
 ];
 
 // =====================
-// STEP 1 – ALLINEAMENTO SCHEMA
+// STEP 1 – SCHEMA
 // =====================
 app.get("/step1/schema", async (req, res) => {
   try {
@@ -100,35 +100,33 @@ app.get("/step1/schema", async (req, res) => {
       range,
     });
 
-    const headersAttuali = read.data.values
-      ? read.data.values[0]
-      : [];
+    const headers = read.data.values ? read.data.values[0] : [];
 
-    if (headersAttuali.length === 0) {
+    if (headers.length === 0) {
       await sheets.spreadsheets.values.update({
         spreadsheetId,
         range,
         valueInputOption: "RAW",
-        requestBody: { values: [CAMPI_BMAN] },
+        requestBody: { values: [CAMPI_BMAN] }
       });
 
-      return res.json({ ok: true, azione: "create", colonne: CAMPI_BMAN });
+      return res.json({ ok: true, azione: "create" });
     }
 
-    const mancanti = CAMPI_BMAN.filter(c => !headersAttuali.includes(c));
+    const mancanti = CAMPI_BMAN.filter(c => !headers.includes(c));
 
     if (mancanti.length > 0) {
       await sheets.spreadsheets.values.update({
         spreadsheetId,
         range,
         valueInputOption: "RAW",
-        requestBody: { values: [[...headersAttuali, ...mancanti]] },
+        requestBody: { values: [[...headers, ...mancanti]] }
       });
 
       return res.json({ ok: true, azione: "update", aggiunte: mancanti });
     }
 
-    return res.json({ ok: true, azione: "none" });
+    res.json({ ok: true, azione: "none" });
 
   } catch (err) {
     console.error("❌ STEP 1 error:", err.message);
@@ -137,7 +135,7 @@ app.get("/step1/schema", async (req, res) => {
 });
 
 // =====================
-// STEP 2 – IMPORT DA BMAN
+// STEP 2 – IMPORT BMAN
 // =====================
 app.get("/step2/import-bman", async (req, res) => {
   try {
@@ -160,7 +158,7 @@ app.get("/step2/import-bman", async (req, res) => {
 
     const read = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${sheetName}!A2:ZZ`,
+      range: `${sheetName}!A2:ZZ`
     });
 
     const rows = read.data.values || [];
@@ -256,7 +254,7 @@ app.get("/", (req, res) => {
 // START SERVER
 // =====================
 app.listen(PORT, () => {
-  console.log(`🚀 SyncFED (Google Sheet) avviato sulla porta ${PORT}`);
+  console.log(`🚀 SyncFED avviato sulla porta ${PORT}`);
 });
 
   console.log(`🚀 SyncFED (Google Sheet) avviato sulla porta ${PORT}`);
