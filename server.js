@@ -17,7 +17,9 @@ const PORT = process.env.PORT || 10000;
 const REQUIRED_ENV = [
   "GOOGLE_SERVICE_ACCOUNT_BASE64",
   "GOOGLE_SHEETS_ID",
-  "BMAN_API_KEY"
+  "BMAN_BASE_URL",
+  "BMAN_API_KEY",
+  "BMAN_SCRIPT_FIELD"
 ];
 
 const missing = REQUIRED_ENV.filter(v => !process.env[v]);
@@ -26,16 +28,14 @@ if (missing.length > 0) {
 }
 
 // =====================
-// GOOGLE SHEET SETUP (BASE64 + GoogleAuth)
+// GOOGLE SHEET AUTH
 // =====================
 let sheets;
 
 try {
   const credentials = JSON.parse(
-    Buffer.from(
-      process.env.GOOGLE_SERVICE_ACCOUNT_BASE64,
-      "base64"
-    ).toString("utf8")
+    Buffer.from(process.env.GOOGLE_SERVICE_ACCOUNT_BASE64, "base64")
+      .toString("utf8")
   );
 
   const auth = new google.auth.GoogleAuth({
@@ -44,32 +44,23 @@ try {
   });
 
   sheets = google.sheets({ version: "v4", auth });
-  console.log("✅ Google Sheet auth OK (BASE64 + GoogleAuth)");
+  console.log("✅ Google Sheet auth OK");
 } catch (err) {
-  console.error("❌ Errore inizializzazione Google Sheet:", err.message);
+  console.error("❌ Google auth error:", err.message);
 }
 
 // =====================
 // SCHEMA COLONNE
 // =====================
 const CAMPI_BMAN = [
-  "Tipo",
   "Codice",
   "TipoCodice",
   "Categoria1",
   "Categoria2",
   "Brand",
   "Titolo",
-  "Etichetta",
-  "Vintage",
-  "Script",
-  "Magazzino",
   "Tag",
   "DescrizioneIT",
-  "DescrizioneFR",
-  "DescrizioneEN",
-  "DescrizioneES",
-  "DescrizioneDE",
   "DescrizioneHTML",
   "Immagine1",
   "Immagine2",
@@ -83,6 +74,7 @@ const CAMPI_BMAN = [
   "UnitaMisura",
   "Sottoscorta",
   "RiordinoMinimo",
+  "Script",
   "Stato",
   "UltimoSync"
 ];
@@ -95,11 +87,7 @@ app.get("/step1/schema", async (req, res) => {
     const spreadsheetId = process.env.GOOGLE_SHEETS_ID;
     const range = "PRODOTTI_BMAN!1:1";
 
-    const read = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range,
-    });
-
+    const read = await sheets.spreadsheets.values.get({ spreadsheetId, range });
     const headers = read.data.values ? read.data.values[0] : [];
 
     if (headers.length === 0) {
@@ -109,12 +97,10 @@ app.get("/step1/schema", async (req, res) => {
         valueInputOption: "RAW",
         requestBody: { values: [CAMPI_BMAN] }
       });
-
       return res.json({ ok: true, azione: "create" });
     }
 
     const mancanti = CAMPI_BMAN.filter(c => !headers.includes(c));
-
     if (mancanti.length > 0) {
       await sheets.spreadsheets.values.update({
         spreadsheetId,
@@ -122,60 +108,73 @@ app.get("/step1/schema", async (req, res) => {
         valueInputOption: "RAW",
         requestBody: { values: [[...headers, ...mancanti]] }
       });
-
       return res.json({ ok: true, azione: "update", aggiunte: mancanti });
     }
 
     res.json({ ok: true, azione: "none" });
 
   } catch (err) {
-    console.error("❌ STEP 1 error:", err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
 // =====================
-// STEP 2 – IMPORT BMAN (ROBUSTO)
+// STEP 2 – GET ANAGRAFICHE BMAN (ASMX)
 // =====================
 app.get("/step2/import-bman", async (req, res) => {
   try {
-    const response = await fetch("https://api.bman.it/prodotti", {
-      headers: {
-        "x-api-key": process.env.BMAN_API_KEY,
-        "Accept": "application/json"
-      }
-    });
+    const payload = {
+      chiave: process.env.BMAN_API_KEY,
+      filtri: [
+        {
+          chiave: process.env.BMAN_SCRIPT_FIELD,
+          operatore: "=",
+          valore: "SI"
+        }
+      ],
+      ordinamentoCampo: "ID",
+      ordinamentoDirezione: 1,
+      numeroPagina: 1,
+      listaDepositi: "",
+      dettaglioVarianti: false
+    };
 
-    const bodyText = await response.text();
+    const response = await fetch(
+      `${process.env.BMAN_BASE_URL}/getAnagrafiche`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
+      }
+    );
+
+    const text = await response.text();
 
     if (!response.ok) {
-      console.error("❌ Bman HTTP error:", response.status);
-      console.error(bodyText.substring(0, 300));
+      console.error(text);
       return res.status(500).json({
         ok: false,
-        error: `Errore Bman HTTP ${response.status}`
+        error: `Bman HTTP ${response.status}`
       });
     }
 
-    let prodotti;
+    let data;
     try {
-      prodotti = JSON.parse(bodyText);
-    } catch (e) {
-      console.error("❌ Bman NON restituisce JSON");
-      console.error(bodyText.substring(0, 300));
+      data = JSON.parse(text);
+    } catch {
+      console.error(text.substring(0, 500));
       return res.status(500).json({
         ok: false,
-        error: "Risposta Bman non in formato JSON"
+        error: "Risposta Bman non JSON"
       });
     }
 
-    const daImportare = prodotti.filter(p => p.script === "SI");
-
-    // ⚠️ Per ora ci fermiamo qui (solo test lettura)
     return res.json({
       ok: true,
-      prodottiTotali: prodotti.length,
-      scriptSI: daImportare.length
+      prodottiRicevuti: data.length,
+      esempio: data[0] || null
     });
 
   } catch (err) {
@@ -188,13 +187,16 @@ app.get("/step2/import-bman", async (req, res) => {
 // ROOT
 // =====================
 app.get("/", (req, res) => {
-  res.send("✅ SyncFED Google Sheet attivo");
+  res.send("✅ SyncFED attivo (Bman ASMX)");
 });
 
 // =====================
-// START SERVER
+// START
 // =====================
 app.listen(PORT, () => {
+  console.log(`🚀 SyncFED avviato sulla porta ${PORT}`);
+});
+
   console.log(`🚀 SyncFED avviato sulla porta ${PORT}`);
 });
 
