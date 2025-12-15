@@ -4,7 +4,7 @@ import fetch from "node-fetch";
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-const BMAN_BASE_URL = process.env.BMAN_BASE_URL; // es: https://cloud.bman.it
+const BMAN_BASE_URL = process.env.BMAN_BASE_URL; // https://emporiodeanna.bman.it:3555
 const BMAN_API_KEY = process.env.BMAN_API_KEY;
 
 if (!BMAN_BASE_URL || !BMAN_API_KEY) {
@@ -22,16 +22,17 @@ app.get("/", (req, res) => {
 });
 
 /* ===========================
-   GET ANAGRAFICHE V4
+   TEST getAnagraficheV4
    =========================== */
 app.get("/test/getAnagraficheV4", async (req, res) => {
   try {
     const soapBody = `<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-               xmlns:xsd="http://www.w3.org/2001/XMLSchema"
-               xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+<soap:Envelope
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+  xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
-    <getAnagraficheV4 xmlns="http://tempuri.org/">
+    <getAnagraficheV4 xmlns="https://emporiodeanna.bman.it/">
       <chiave>${BMAN_API_KEY}</chiave>
       <filtri>[]</filtri>
       <ordinamentoCampo>ID</ordinamentoCampo>
@@ -48,7 +49,7 @@ app.get("/test/getAnagraficheV4", async (req, res) => {
       headers: {
         "Content-Type": "text/xml; charset=utf-8",
         "Accept": "text/xml",
-        "SOAPAction": "http://tempuri.org/getAnagraficheV4"
+        "SOAPAction": "https://emporiodeanna.bman.it/getAnagraficheV4"
       },
       body: soapBody
     });
