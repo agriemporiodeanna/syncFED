@@ -103,6 +103,57 @@ app.get('/api/step2/script-si', async (req, res) => {
   }
 });
 
+/*TEMP*/
+async function getDepositi() {
+  const soapBody = `
+<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+  xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <getDepositi xmlns="http://cloud.bman.it/">
+      <chiave>${BMAN_CHIAVE}</chiave>
+    </getDepositi>
+  </soap:Body>
+</soap:Envelope>`.trim();
+
+  const response = await fetch(BMAN_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'text/xml; charset=utf-8',
+      'SOAPAction': 'http://cloud.bman.it/getDepositi'
+    },
+    body: soapBody
+  });
+
+  const xml = await response.text();
+  const parsed = await xml2js.parseStringPromise(xml, { explicitArray: false });
+
+  const result =
+    parsed?.['soap:Envelope']?.['soap:Body']?.['getDepositiResponse']?.['getDepositiResult'];
+
+  return JSON.parse(result || '[]');
+}
+
+
+app.get('/api/debug/depositi', async (req, res) => {
+  try {
+    const depositi = await getDepositi();
+
+    res.json({
+      ok: true,
+      totale: depositi.length,
+      depositi
+    });
+
+  } catch (err) {
+    console.error('❌ Errore getDepositi:', err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+
 /* =========================================================
    HEALTH CHECK
    ========================================================= */
