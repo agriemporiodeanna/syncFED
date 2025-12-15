@@ -17,7 +17,7 @@ if (!BMAN_BASE_URL || !BMAN_API_KEY) {
 app.get("/", (req, res) => {
   res.json({
     ok: true,
-    service: "SyncFED – SOAP getAnagraficheV4"
+    service: "SyncFED – SOAP getAnagraficheV4 (Bman)"
   });
 });
 
@@ -27,12 +27,9 @@ app.get("/", (req, res) => {
 app.get("/test/getAnagraficheV4", async (req, res) => {
   try {
     const soapBody = `<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
-  xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
-    <getAnagraficheV4 xmlns="https://emporiodeanna.bman.it/">
+    <getAnagraficheV4>
       <chiave>${BMAN_API_KEY}</chiave>
       <filtri>[]</filtri>
       <ordinamentoCampo>ID</ordinamentoCampo>
@@ -49,7 +46,7 @@ app.get("/test/getAnagraficheV4", async (req, res) => {
       headers: {
         "Content-Type": "text/xml; charset=utf-8",
         "Accept": "text/xml",
-        "SOAPAction": "https://emporiodeanna.bman.it/getAnagraficheV4"
+        "SOAPAction": "getAnagraficheV4"
       },
       body: soapBody
     });
