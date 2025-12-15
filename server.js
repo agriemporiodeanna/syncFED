@@ -4,7 +4,8 @@ import fetch from "node-fetch";
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-const { BMAN_BASE_URL, BMAN_API_KEY } = process.env;
+const BMAN_BASE_URL = process.env.BMAN_BASE_URL; // es: https://cloud.bman.it
+const BMAN_API_KEY = process.env.BMAN_API_KEY;
 
 if (!BMAN_BASE_URL || !BMAN_API_KEY) {
   console.error("❌ Variabili ambiente mancanti: BMAN_BASE_URL, BMAN_API_KEY");
@@ -16,16 +17,16 @@ if (!BMAN_BASE_URL || !BMAN_API_KEY) {
 app.get("/", (req, res) => {
   res.json({
     ok: true,
-    service: "SyncFED SOAP getAnagraficheV4"
+    service: "SyncFED – SOAP getAnagraficheV4"
   });
 });
 
 /* ===========================
-   STEP 2 – GET ANAGRAFICHE V4
+   GET ANAGRAFICHE V4
    =========================== */
-app.get("/step2/import-bman", async (req, res) => {
+app.get("/test/getAnagraficheV4", async (req, res) => {
   try {
-    const soapEnvelope = `<?xml version="1.0" encoding="utf-8"?>
+    const soapBody = `<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                xmlns:xsd="http://www.w3.org/2001/XMLSchema"
                xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
@@ -46,20 +47,13 @@ app.get("/step2/import-bman", async (req, res) => {
       method: "POST",
       headers: {
         "Content-Type": "text/xml; charset=utf-8",
+        "Accept": "text/xml",
         "SOAPAction": "http://tempuri.org/getAnagraficheV4"
       },
-      body: soapEnvelope
+      body: soapBody
     });
 
     const text = await response.text();
-
-    if (text.includes("<soap:Fault>")) {
-      return res.json({
-        ok: false,
-        error: "SOAP Fault restituito da Bman",
-        rispostaSOAP: text
-      });
-    }
 
     res.json({
       ok: true,
@@ -69,7 +63,7 @@ app.get("/step2/import-bman", async (req, res) => {
 
   } catch (err) {
     console.error("❌ Errore SOAP:", err.message);
-    res.json({
+    res.status(500).json({
       ok: false,
       error: err.message
     });
@@ -77,7 +71,7 @@ app.get("/step2/import-bman", async (req, res) => {
 });
 
 /* ===========================
-   AVVIO SERVER
+   START
    =========================== */
 app.listen(PORT, () => {
   console.log(`🚀 SyncFED avviato sulla porta ${PORT}`);
