@@ -5,7 +5,7 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 const BMAN_BASE_URL = process.env.BMAN_BASE_URL; 
-// es: https://emporiodeanna.bman.it:3555
+// https://emporiodeanna.bman.it:3555
 const BMAN_API_KEY = process.env.BMAN_API_KEY;
 
 if (!BMAN_BASE_URL || !BMAN_API_KEY) {
@@ -18,30 +18,39 @@ if (!BMAN_BASE_URL || !BMAN_API_KEY) {
 app.get("/", (req, res) => {
   res.json({
     ok: true,
-    service: "SyncFED – getNomeCampoOpzionale",
-    info: "Usa /debug/opzionali per vedere i nomi dei campi"
+    step: "STEP 2 – filtro Script = DA ELABORARE",
+    service: "SyncFED – getAnagraficheV4"
   });
 });
 
 /* ===========================
-   DEBUG – NOMI CAMPI OPZIONALI
+   STEP 2 – IMPORT BMAN
    =========================== */
-app.get("/debug/opzionali", async (req, res) => {
+app.get("/step2/import-bman", async (req, res) => {
   try {
+    const filtriScriptSI = `
+[
+  {
+    "chiave": "opzionale11",
+    "operatore": "=",
+    "valore": "DA ELABORARE"
+  }
+]
+    `.trim();
+
     const soapBody = `<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
-  xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
-
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
-    <getNomeCampoOpzionale xmlns="http://cloud.bman.it/">
+    <getAnagraficheV4 xmlns="http://cloud.bman.it/">
       <chiave>${BMAN_API_KEY}</chiave>
-      <indiceCampo>0</indiceCampo>
-      <tipoArticoli>0</tipoArticoli>
-    </getNomeCampoOpzionale>
+      <filtri>${filtriScriptSI}</filtri>
+      <ordinamentoCampo>ID</ordinamentoCampo>
+      <ordinamentoDirezione>1</ordinamentoDirezione>
+      <pagina>1</pagina>
+      <listaDepositi>[]</listaDepositi>
+      <dettaglioVarianti>false</dettaglioVarianti>
+    </getAnagraficheV4>
   </soap:Body>
-
 </soap:Envelope>`;
 
     const response = await fetch(`${BMAN_BASE_URL}/bmanapi.asmx`, {
@@ -49,7 +58,7 @@ app.get("/debug/opzionali", async (req, res) => {
       headers: {
         "Content-Type": "text/xml; charset=utf-8",
         "Accept": "text/xml",
-        "SOAPAction": "http://cloud.bman.it/getNomeCampoOpzionale"
+        "SOAPAction": "http://cloud.bman.it/getAnagraficheV4"
       },
       body: soapBody
     });
@@ -58,12 +67,13 @@ app.get("/debug/opzionali", async (req, res) => {
 
     res.json({
       ok: true,
-      descrizione: "Elenco campi opzionali in ordine (opzionale1 → opzionale25)",
+      step: "STEP 2 – Script = SI",
+      lunghezzaRisposta: text.length,
       rispostaSOAP: text
     });
 
   } catch (err) {
-    console.error("❌ Errore SOAP getNomeCampoOpzionale:", err.message);
+    console.error("❌ Errore SOAP STEP 2:", err.message);
     res.status(500).json({
       ok: false,
       error: err.message
@@ -72,8 +82,8 @@ app.get("/debug/opzionali", async (req, res) => {
 });
 
 /* ===========================
-   START SERVER
+   START
    =========================== */
 app.listen(PORT, () => {
-  console.log(`🚀 SyncFED (debug opzionali) avviato sulla porta ${PORT}`);
+  console.log(`🚀 SyncFED avviato sulla porta ${PORT}`);
 });
