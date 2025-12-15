@@ -18,7 +18,7 @@ if (!BMAN_BASE_URL || !BMAN_API_KEY) {
 app.get("/", (req, res) => {
   res.json({
     ok: true,
-    step: "STEP 2 – filtro Script = SI",
+    step: "STEP 2 – filtro Script = DA ELABORARE",
     service: "SyncFED – getAnagraficheV4"
   });
 });
@@ -32,8 +32,8 @@ app.get("/step2/import-bman", async (req, res) => {
 [
   {
     "chiave": "opzionale11",
-    "operatore": "LIKE",
-    "valore": "%"
+    "operatore": "=",
+    "valore": "DA ELABORARE"
   }
 ]
     `.trim();
