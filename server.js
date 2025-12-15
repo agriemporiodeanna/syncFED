@@ -32,7 +32,7 @@ app.get("/step2/import-bman", async (req, res) => {
 [
   {
     "chiave": "opzionale11",
-    "operatore": "=",
+    "operatore": "LIKE",
     "valore": "SI"
   }
 ]
