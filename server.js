@@ -33,7 +33,7 @@ app.get("/step2/import-bman", async (req, res) => {
   {
     "chiave": "opzionale11",
     "operatore": "=",
-    "valore": "DA ELABORARE"
+    "valore": "SI"
   }
 ]
     `.trim();
