@@ -1,24 +1,17 @@
-// server.js
 import express from "express";
 import fetch from "node-fetch";
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-/* ===========================
-   VARIABILI AMBIENTE OBBLIGATORIE
-   =========================== */
-const {
-  BMAN_BASE_URL,     // es: https://cloud.bman.it:3555
-  BMAN_API_KEY       // chiave integrazione Bman
-} = process.env;
+const { BMAN_BASE_URL, BMAN_API_KEY } = process.env;
 
 if (!BMAN_BASE_URL || !BMAN_API_KEY) {
   console.error("❌ Variabili ambiente mancanti: BMAN_BASE_URL, BMAN_API_KEY");
 }
 
 /* ===========================
-   ROUTE ROOT (TEST)
+   ROOT
    =========================== */
 app.get("/", (req, res) => {
   res.json({
@@ -28,14 +21,16 @@ app.get("/", (req, res) => {
 });
 
 /* ===========================
-   STEP 2 - IMPORT BMAN
+   STEP 2 – GET ANAGRAFICHE V4
    =========================== */
 app.get("/step2/import-bman", async (req, res) => {
   try {
     const soapEnvelope = `<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+               xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+               xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
-    <getAnagraficheV4 xmlns="https://cloud.bman.it/">
+    <getAnagraficheV4 xmlns="http://tempuri.org/">
       <chiave>${BMAN_API_KEY}</chiave>
       <filtri>[]</filtri>
       <ordinamentoCampo>ID</ordinamentoCampo>
@@ -51,23 +46,13 @@ app.get("/step2/import-bman", async (req, res) => {
       method: "POST",
       headers: {
         "Content-Type": "text/xml; charset=utf-8",
-        "SOAPAction": "\"https://cloud.bman.it/getAnagraficheV4\""
+        "SOAPAction": "http://tempuri.org/getAnagraficheV4"
       },
       body: soapEnvelope
     });
 
     const text = await response.text();
 
-    // Bman ha risposto HTML → non SOAP
-    if (text.trim().startsWith("<!DOCTYPE html")) {
-      return res.json({
-        ok: false,
-        error: "Bman ha risposto HTML: richiesta non SOAP",
-        anteprima: text.substring(0, 500)
-      });
-    }
-
-    // SOAP Fault
     if (text.includes("<soap:Fault>")) {
       return res.json({
         ok: false,
@@ -76,7 +61,6 @@ app.get("/step2/import-bman", async (req, res) => {
       });
     }
 
-    // OK
     res.json({
       ok: true,
       lunghezzaRisposta: text.length,
@@ -84,7 +68,7 @@ app.get("/step2/import-bman", async (req, res) => {
     });
 
   } catch (err) {
-    console.error("❌ Errore SOAP Bman:", err.message);
+    console.error("❌ Errore SOAP:", err.message);
     res.json({
       ok: false,
       error: err.message
