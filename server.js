@@ -111,6 +111,23 @@ app.get('/', (req, res) => {
   res.send('🚀 SyncFED attivo – SOAP Bman OK – Normalizzazione ON');
 });
 
+/* temporanee*/
+app.get('/api/debug/anagrafiche-raw', async (req, res) => {
+  try {
+    const articoli = await getAnagraficheV4Raw();
+
+    res.json({
+      ok: true,
+      totale: articoli.length,
+      sample: articoli.slice(0, 5)
+    });
+
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+
 /* =========================================================
    START SERVER
    ========================================================= */
