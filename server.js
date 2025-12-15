@@ -4,7 +4,8 @@ import fetch from "node-fetch";
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-const BMAN_BASE_URL = process.env.BMAN_BASE_URL; // https://emporiodeanna.bman.it:3555
+const BMAN_BASE_URL = process.env.BMAN_BASE_URL; 
+// https://emporiodeanna.bman.it:3555
 const BMAN_API_KEY = process.env.BMAN_API_KEY;
 
 if (!BMAN_BASE_URL || !BMAN_API_KEY) {
@@ -27,9 +28,10 @@ app.get("/", (req, res) => {
 app.get("/test/getAnagraficheV4", async (req, res) => {
   try {
     const soapBody = `<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+<soap:Envelope
+  xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
-    <getAnagraficheV4>
+    <getAnagraficheV4 xmlns="http://cloud.bman.it/">
       <chiave>${BMAN_API_KEY}</chiave>
       <filtri>[]</filtri>
       <ordinamentoCampo>ID</ordinamentoCampo>
@@ -46,7 +48,7 @@ app.get("/test/getAnagraficheV4", async (req, res) => {
       headers: {
         "Content-Type": "text/xml; charset=utf-8",
         "Accept": "text/xml",
-        "SOAPAction": "getAnagraficheV4"
+        "SOAPAction": "http://cloud.bman.it/getAnagraficheV4"
       },
       body: soapBody
     });
