@@ -35,7 +35,7 @@ function normalizeValue(value) {
 }
 
 /* =========================================================
-   SOAP getAnagrafiche (STABILE)
+   SOAP – getAnagrafiche (BASE STABILE)
    ========================================================= */
 
 async function getAnagraficheScriptSI() {
@@ -78,7 +78,6 @@ async function getAnagraficheScriptSI() {
     parsed?.['soap:Envelope']?.['soap:Body']?.['getAnagraficheResponse']?.['getAnagraficheResult'];
 
   const articoli = JSON.parse(result || '[]');
-
   return articoli.filter(a => normalizeValue(a.opzionale11) === 'si');
 }
 
@@ -104,7 +103,7 @@ async function getSheetsClient() {
 
   return {
     sheets: google.sheets({ version: 'v4', auth }),
-    sheetId: process.env.GOOGLE_SHEET_ID,
+    sheetId: process.env.GOOGLE_SHEET_ID
   };
 }
 
@@ -120,33 +119,34 @@ app.get('/api/step2/script-si', async (req, res) => {
       ok: true,
       step: 'STEP 2 – Script = SI',
       totale: articoli.length,
-      articoli,
+      articoli
     });
 
   } catch (err) {
-    console.error(err);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
 /* =========================================================
-   API – STEP 3 (TEST SCRITTURA GOOGLE SHEET)
+   API – STEP 3 (SCRITTURA GOOGLE SHEET)
    ========================================================= */
 
 app.get('/api/step3/export-sheet', async (req, res) => {
   try {
     const articoli = await getAnagraficheScriptSI();
-    const primo = articoli[0];
-
-    if (!primo) {
-      return res.json({ ok: false, error: 'Nessun articolo da scrivere' });
+    if (!articoli.length) {
+      return res.json({ ok: false, error: 'Nessun articolo Script=SI' });
     }
 
     const { sheets, sheetId } = await getSheetsClient();
+    const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId });
+    const sheetTitle = meta.data.sheets[0].properties.title;
+
+    const primo = articoli[0];
 
     await sheets.spreadsheets.values.update({
       spreadsheetId: sheetId,
-      range: 'Sheet1!A1:D2',
+      range: `${sheetTitle}!A1:D2`,
       valueInputOption: 'RAW',
       requestBody: {
         values: [
@@ -164,32 +164,58 @@ app.get('/api/step3/export-sheet', async (req, res) => {
     res.json({
       ok: true,
       step: 'STEP 3 – Google Sheet',
-      scritto: true,
-      articoloTest: {
-        ID: primo.ID,
-        codice: primo.codice
-      }
+      sheet: sheetTitle,
+      scritto: true
     });
 
   } catch (err) {
-    console.error('❌ Errore STEP 3:', err);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
 /* =========================================================
-   HEALTH
+   API – TEST GOOGLE KEY (DIAGNOSTICA)
    ========================================================= */
 
-app.get('/', (req, res) => {
-  res.send('🚀 SyncFED attivo – STEP 2 OK – STEP 3 pronto');
+app.get('/api/test/google-key', async (req, res) => {
+  try {
+    const auth = new google.auth.JWT({
+      email: process.env.GOOGLE_CLIENT_EMAIL,
+      key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+    });
+
+    await auth.authorize();
+
+    res.json({
+      ok: true,
+      message: 'Chiave Google valida – JWT firmato correttamente',
+      node: process.version
+    });
+
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: err.message,
+      code: err.code || 'ERR'
+    });
+  }
 });
 
 /* =========================================================
-   START
+   HEALTH CHECK
+   ========================================================= */
+
+app.get('/', (req, res) => {
+  res.send('🚀 SyncFED attivo – STEP 2 OK – STEP 3 OK – Google Test OK');
+});
+
+/* =========================================================
+   START SERVER
    ========================================================= */
 
 app.listen(PORT, () => {
   console.log(`🚀 SyncFED avviato sulla porta ${PORT}`);
   console.log(`Node: ${process.version}`);
 });
+
