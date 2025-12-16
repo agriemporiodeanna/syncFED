@@ -2,12 +2,11 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import xml2js from 'xml2js';
-import fetch from 'node-fetch';
 import { google } from 'googleapis';
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 const PORT = process.env.PORT || 10000;
 
@@ -39,63 +38,57 @@ function normalizeValue(v) {
    SOAP HELPERS
    ========================================================= */
 
-async function soapCall(action, body) {
+async function soapCall(action, bodyXml) {
   const res = await fetch(BMAN_ENDPOINT, {
     method: 'POST',
     headers: {
       'Content-Type': 'text/xml; charset=utf-8',
       SOAPAction: action,
     },
-    body,
+    body: bodyXml,
   });
-
-  return res.text();
+  return await res.text();
 }
 
 async function parseSoapJson(xml, responseTag, resultTag) {
   const parsed = await xml2js.parseStringPromise(xml, { explicitArray: false });
-  const result =
+  const raw =
     parsed?.['soap:Envelope']?.['soap:Body']?.[responseTag]?.[resultTag];
 
-  if (!result) return [];
-
-  if (typeof result === 'string') {
-    try {
-      return JSON.parse(result);
-    } catch {
-      return [];
-    }
+  if (!raw) return [];
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return [];
   }
-  return result;
 }
 
 /* =========================================================
-   BMAN – getAnagrafiche (STANDARD)
+   BMAN – getAnagrafiche (FILTRO SCRIPT = SI)
    ========================================================= */
 
-async function getAnagrafiche({
-  numeroPagina = 1,
-  listaDepositi = [],
-  filtri = [],
-  ordinamentoCampo = 'ID',
-  ordinamentoDirezione = 1,
-  dettaglioVarianti = false,
-} = {}) {
-  const soapBody = `
-<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
-  xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+async function getAnagrafiche({ numeroPagina = 1, listaDepositi = [] } = {}) {
+  const filtri = [
+    {
+      chiave: 'opzionale11',
+      operatore: '=',
+      valore: 'SI',
+    },
+  ];
+
+  const soapBody = `<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+               xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+               xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
     <getAnagrafiche xmlns="http://cloud.bman.it/">
       <chiave>${BMAN_CHIAVE}</chiave>
       <filtri><![CDATA[${JSON.stringify(filtri)}]]></filtri>
-      <ordinamentoCampo>${ordinamentoCampo}</ordinamentoCampo>
-      <ordinamentoDirezione>${ordinamentoDirezione}</ordinamentoDirezione>
+      <ordinamentoCampo>ID</ordinamentoCampo>
+      <ordinamentoDirezione>1</ordinamentoDirezione>
       <numeroPagina>${numeroPagina}</numeroPagina>
       <listaDepositi><![CDATA[${JSON.stringify(listaDepositi)}]]></listaDepositi>
-      <dettaglioVarianti>${dettaglioVarianti}</dettaglioVarianti>
+      <dettaglioVarianti>false</dettaglioVarianti>
     </getAnagrafiche>
   </soap:Body>
 </soap:Envelope>`.trim();
@@ -105,7 +98,7 @@ async function getAnagrafiche({
     soapBody
   );
 
-  return parseSoapJson(
+  return await parseSoapJson(
     xml,
     'getAnagraficheResponse',
     'getAnagraficheResult'
@@ -117,46 +110,37 @@ async function getAnagrafiche({
    ========================================================= */
 
 function getGoogleCreds() {
-  const missing = [
-    'GOOGLE_SHEET_ID',
-    'GOOGLE_CLIENT_EMAIL',
-    'GOOGLE_PRIVATE_KEY_BASE64',
-  ].filter((k) => !process.env[k]);
+  const missing = ['GOOGLE_SHEET_ID', 'GOOGLE_CLIENT_EMAIL', 'GOOGLE_PRIVATE_KEY_BASE64']
+    .filter(k => !process.env[k]);
 
   if (missing.length) {
     throw new Error(`Variabili ambiente mancanti: ${missing.join(', ')}`);
   }
 
-  const privateKey = Buffer.from(
-    process.env.GOOGLE_PRIVATE_KEY_BASE64,
-    'base64'
-  )
+  let privateKey = Buffer
+    .from(process.env.GOOGLE_PRIVATE_KEY_BASE64, 'base64')
     .toString('utf8')
     .replace(/\\n/g, '\n')
     .trim();
 
   return {
     sheetId: process.env.GOOGLE_SHEET_ID,
-    email: process.env.GOOGLE_CLIENT_EMAIL,
-    key: privateKey,
+    clientEmail: process.env.GOOGLE_CLIENT_EMAIL,
+    privateKey,
   };
 }
 
-async function getSheets() {
-  const { sheetId, email, key } = getGoogleCreds();
+async function getSheetsClient() {
+  const { clientEmail, privateKey, sheetId } = getGoogleCreds();
 
   const auth = new google.auth.JWT({
-    email,
-    key,
+    email: clientEmail,
+    key: privateKey,
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
 
   await auth.authorize();
-
-  return {
-    sheets: google.sheets({ version: 'v4', auth }),
-    sheetId,
-  };
+  return { sheets: google.sheets({ version: 'v4', auth }), sheetId };
 }
 
 /* =========================================================
@@ -177,20 +161,20 @@ const SHEET_HEADERS = [
   'Script',
 ];
 
-function mapRow(a) {
-  const fotos = Array.isArray(a?.arrFoto) ? a.arrFoto : [];
+function toRow(a) {
+  const foto = Array.isArray(a.arrFoto) ? a.arrFoto : [];
   return [
-    a?.ID ?? '',
-    a?.codice ?? '',
-    a?.opzionale2 ?? '',
-    a?.tag ?? '',
-    a?.descrizioneHtml ?? '',
-    fotos[0] ?? '',
-    fotos[1] ?? '',
-    fotos[2] ?? '',
-    fotos[3] ?? '',
-    fotos[4] ?? '',
-    a?.opzionale11 ?? '',
+    a.ID ?? '',
+    a.codice ?? '',
+    a.opzionale2 ?? '',
+    a.tag ?? '',
+    a.descrizioneHtml ?? '',
+    foto[0] ?? '',
+    foto[1] ?? '',
+    foto[2] ?? '',
+    foto[3] ?? '',
+    foto[4] ?? '',
+    a.opzionale11 ?? '',
   ];
 }
 
@@ -199,25 +183,18 @@ function mapRow(a) {
    ========================================================= */
 
 app.get('/', (req, res) => {
-  res.send('🚀 SyncFED attivo – getAnagrafiche + Google Sheet');
+  res.send('🚀 SyncFED attivo – STEP 2 + STEP 3 pronti');
 });
 
-/* STEP 2 – Script = SI */
+/* STEP 2 */
 app.get('/api/step2/script-si', async (req, res) => {
   try {
-    const articoli = await getAnagrafiche({
-      filtri: [],
-      numeroPagina: 1,
-    });
-
-    const filtrati = articoli.filter(
-      (a) => normalizeValue(a?.opzionale11) === 'si'
-    );
+    const articoli = await getAnagrafiche({ numeroPagina: 1 });
 
     res.json({
       ok: true,
-      totale: filtrati.length,
-      articoli: filtrati,
+      totale: articoli.length,
+      articoli,
     });
   } catch (err) {
     console.error(err);
@@ -225,38 +202,31 @@ app.get('/api/step2/script-si', async (req, res) => {
   }
 });
 
-/* STEP 3 – Scrittura Google Sheet */
+/* STEP 3 */
 app.get('/api/step3/export-sheet', async (req, res) => {
   try {
-    const articoli = await getAnagrafiche({
-      filtri: [],
-      numeroPagina: 1,
-    });
+    const articoli = await getAnagrafiche({ numeroPagina: 1 });
+    const rows = articoli.map(toRow);
 
-    const filtrati = articoli.filter(
-      (a) => normalizeValue(a?.opzionale11) === 'si'
-    );
-
-    const rows = filtrati.map(mapRow);
-
-    const { sheets, sheetId } = await getSheets();
+    const { sheets, sheetId } = await getSheetsClient();
+    const sheetTitle = 'Sheet1';
 
     await sheets.spreadsheets.values.update({
       spreadsheetId: sheetId,
-      range: 'Sheet1!1:1',
+      range: `${sheetTitle}!1:1`,
       valueInputOption: 'RAW',
       requestBody: { values: [SHEET_HEADERS] },
     });
 
     await sheets.spreadsheets.values.clear({
       spreadsheetId: sheetId,
-      range: 'Sheet1!2:10000',
+      range: `${sheetTitle}!2:100000`,
     });
 
     if (rows.length) {
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetId,
-        range: 'Sheet1!2',
+        range: `${sheetTitle}!2`,
         valueInputOption: 'RAW',
         requestBody: { values: rows },
       });
@@ -264,7 +234,7 @@ app.get('/api/step3/export-sheet', async (req, res) => {
 
     res.json({
       ok: true,
-      totaleScritti: rows.length,
+      scritti: rows.length,
     });
   } catch (err) {
     console.error(err);
