@@ -6,7 +6,7 @@ async function testGoogleKey() {
 
   const required = [
     'GOOGLE_CLIENT_EMAIL',
-    'GOOGLE_PRIVATE_KEY_BASE64',
+    'GOOGLE_PRIVATE_KEY',
     'GOOGLE_SHEET_ID'
   ];
 
@@ -21,13 +21,11 @@ async function testGoogleKey() {
 
   let privateKey;
   try {
-    privateKey = Buffer
-      .from(process.env.GOOGLE_PRIVATE_KEY_BASE64, 'base64')
-      .toString('utf8')
+    privateKey = process.env.GOOGLE_PRIVATE_KEY
       .replace(/\\n/g, '\n')
       .trim();
   } catch (e) {
-    console.error('❌ Errore decodifica Base64 della chiave privata');
+    console.error('❌ Errore parsing chiave privata Google');
     throw e;
   }
 
