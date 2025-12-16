@@ -1,4 +1,3 @@
-console.log('NODE_OPTIONS =', process.env.NODE_OPTIONS);
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
