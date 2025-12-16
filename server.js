@@ -1,4 +1,3 @@
-import 'dotenv/config';
 import express from 'express';
 import fetch from 'node-fetch';
 import bodyParser from 'body-parser';
@@ -9,6 +8,12 @@ const app = express();
 app.use(bodyParser.json());
 
 const PORT = process.env.PORT || 10000;
+
+/* =========================================================
+   LOG AMBIENTE
+   ========================================================= */
+console.log('NODE VERSION =', process.version);
+console.log('OPENSSL VERSION =', process.versions.openssl);
 
 /* =========================================================
    CONFIGURAZIONE BMAN
@@ -22,7 +27,7 @@ if (!BMAN_CHIAVE) {
 }
 
 /* =========================================================
-   NORMALIZZAZIONE
+   NORMALIZZAZIONE ROBUSTA
    ========================================================= */
 
 function normalizeValue(value) {
@@ -35,7 +40,7 @@ function normalizeValue(value) {
 }
 
 /* =========================================================
-   SOAP – getAnagrafiche (VERSIONE FUNZIONANTE)
+   SOAP getAnagrafiche (BASE STABILE)
    ========================================================= */
 
 async function getAnagrafiche() {
@@ -66,7 +71,7 @@ async function getAnagrafiche() {
     method: 'POST',
     headers: {
       'Content-Type': 'text/xml; charset=utf-8',
-      SOAPAction: 'http://cloud.bman.it/getAnagrafiche'
+      'SOAPAction': 'http://cloud.bman.it/getAnagrafiche'
     },
     body: soapBody
   });
@@ -81,7 +86,7 @@ async function getAnagrafiche() {
 }
 
 /* =========================================================
-   STEP 2 – Script = SI (INVARIATO)
+   STEP 2 – SCRIPT = SI (OK)
    ========================================================= */
 
 app.get('/api/step2/script-si', async (req, res) => {
@@ -109,48 +114,40 @@ app.get('/api/step2/script-si', async (req, res) => {
 });
 
 /* =========================================================
-   TEST GOOGLE KEY (SOLO VERIFICA)
+   TEST GOOGLE KEY – DA BROWSER
    ========================================================= */
 
-app.get('/api/test/google', async (req, res) => {
+app.get('/api/test/google-key', async (req, res) => {
   try {
-    const required = [
-      'GOOGLE_CLIENT_EMAIL',
-      'GOOGLE_PRIVATE_KEY',
-      'GOOGLE_SHEET_ID'
-    ];
+    const email = process.env.GOOGLE_CLIENT_EMAIL;
+    const keyRaw = process.env.GOOGLE_PRIVATE_KEY;
 
-    const missing = required.filter(k => !process.env[k]);
-    if (missing.length) {
+    if (!email || !keyRaw) {
       return res.status(500).json({
         ok: false,
-        error: `Variabili ambiente mancanti: ${missing.join(', ')}`
+        error: 'Variabili ambiente mancanti',
+        missing: [
+          !email ? 'GOOGLE_CLIENT_EMAIL' : null,
+          !keyRaw ? 'GOOGLE_PRIVATE_KEY' : null
+        ].filter(Boolean)
       });
     }
 
-    const clientEmail = process.env.GOOGLE_CLIENT_EMAIL.trim();
-    const sheetId = process.env.GOOGLE_SHEET_ID.trim();
-
-    const privateKey = process.env.GOOGLE_PRIVATE_KEY
-      .replace(/\\n/g, '\n')
-      .trim();
+    // NORMALIZZAZIONE RAW (OBBLIGATORIA)
+    const privateKey = keyRaw.replace(/\\n/g, '\n');
 
     const auth = new google.auth.JWT({
-      email: clientEmail,
+      email,
       key: privateKey,
-      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+      scopes: ['https://www.googleapis.com/auth/cloud-platform']
     });
 
     await auth.authorize();
 
-    const sheets = google.sheets({ version: 'v4', auth });
-    const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId });
-
     res.json({
       ok: true,
-      message: 'Chiave Google valida',
-      spreadsheetTitle: meta.data.properties.title,
-      sheets: meta.data.sheets.map(s => s.properties.title)
+      message: 'Chiave Google valida – JWT firmato correttamente',
+      node: process.version
     });
 
   } catch (err) {
@@ -158,17 +155,34 @@ app.get('/api/test/google', async (req, res) => {
     res.status(500).json({
       ok: false,
       error: err.message,
-      code: err.code || 'n/a'
+      code: err.code || 'UNKNOWN'
     });
   }
 });
 
 /* =========================================================
-   HEALTH CHECK
+   DEBUG RAW
+   ========================================================= */
+
+app.get('/api/debug/anagrafiche-raw', async (req, res) => {
+  try {
+    const articoli = await getAnagrafiche();
+    res.json({
+      ok: true,
+      totale: articoli.length,
+      sample: articoli.slice(0, 5)
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/* =========================================================
+   ROOT / HEALTH
    ========================================================= */
 
 app.get('/', (req, res) => {
-  res.send('🚀 SyncFED attivo – STEP 2 stabile – Google test pronto');
+  res.send('🚀 SyncFED attivo – STEP 2 OK – Google Test disponibile');
 });
 
 /* =========================================================
