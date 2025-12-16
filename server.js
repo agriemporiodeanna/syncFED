@@ -1,34 +1,31 @@
-console.log('NODE VERSION =', process.version);
-console.log('OPENSSL VERSION =', process.versions.openssl);
 import express from 'express';
 import fetch from 'node-fetch';
+import bodyParser from 'body-parser';
 import xml2js from 'xml2js';
 
 const app = express();
+app.use(bodyParser.json());
+
 const PORT = process.env.PORT || 10000;
 
 /* =========================================================
-   LOG AMBIENTE (verifica Node + OpenSSL)
+   CONFIGURAZIONE BMAN
    ========================================================= */
-console.log('NODE VERSION =', process.version);
-console.log('OPENSSL VERSION =', process.versions.openssl);
 
-/* =========================================================
-   CONFIG BMAN
-   ========================================================= */
 const BMAN_ENDPOINT = 'https://emporiodeanna.bman.it/bmanapi.asmx';
 const BMAN_CHIAVE = process.env.BMAN_API_KEY;
 
 if (!BMAN_CHIAVE) {
-  console.error('❌ BMAN_API_KEY mancante');
+  console.error('❌ Variabile ambiente mancante: BMAN_API_KEY');
 }
 
 /* =========================================================
-   NORMALIZZAZIONE
+   NORMALIZZAZIONE (ROBUSTA)
    ========================================================= */
-function normalize(v) {
-  return (v ?? '')
-    .toString()
+
+function normalizeValue(value) {
+  if (value === null || value === undefined) return '';
+  return String(value)
     .trim()
     .toLowerCase()
     .normalize('NFD')
@@ -36,41 +33,17 @@ function normalize(v) {
 }
 
 /* =========================================================
-   SOAP HELPER
+   SOAP getAnagrafiche (METODO CORRETTO)
    ========================================================= */
-async function soapCall(action, body) {
-  const res = await fetch(BMAN_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'text/xml; charset=utf-8',
-      SOAPAction: action,
-    },
-    body,
-  });
 
-  return res.text();
-}
+async function getAnagrafiche() {
+  const filtri = [
+    { chiave: 'bmanShop', operatore: '=', valore: 'True' },
+    { chiave: 'opzionale11', operatore: '=', valore: 'si' }
+  ];
 
-async function parseSoapResult(xml, responseTag, resultTag) {
-  const parsed = await xml2js.parseStringPromise(xml, {
-    explicitArray: false,
-  });
-
-  const json =
-    parsed?.['soap:Envelope']?.['soap:Body']?.[responseTag]?.[resultTag];
-
-  if (!json) return [];
-  return JSON.parse(json);
-}
-
-/* =========================================================
-   getAnagrafiche (NON v4)
-   ========================================================= */
-async function getAnagrafiche({ filtri = [], listaDepositi = [] } = {}) {
-  const filtriJson = JSON.stringify(filtri);
-  const depositiJson = JSON.stringify(listaDepositi);
-
-  const body = `<?xml version="1.0" encoding="utf-8"?>
+  const soapBody = `
+<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xmlns:xsd="http://www.w3.org/2001/XMLSchema"
@@ -78,83 +51,98 @@ async function getAnagrafiche({ filtri = [], listaDepositi = [] } = {}) {
   <soap:Body>
     <getAnagrafiche xmlns="http://cloud.bman.it/">
       <chiave>${BMAN_CHIAVE}</chiave>
-      <filtri><![CDATA[${filtriJson}]]></filtri>
+
+      <filtri><![CDATA[${JSON.stringify(filtri)}]]></filtri>
+
       <ordinamentoCampo>ID</ordinamentoCampo>
       <ordinamentoDirezione>1</ordinamentoDirezione>
       <numeroPagina>1</numeroPagina>
-      <listaDepositi><![CDATA[${depositiJson}]]></listaDepositi>
+
+      <listaDepositi><![CDATA[[1]]]></listaDepositi>
       <dettaglioVarianti>false</dettaglioVarianti>
     </getAnagrafiche>
   </soap:Body>
-</soap:Envelope>`;
+</soap:Envelope>`.trim();
 
-  const xml = await soapCall(
-    'http://cloud.bman.it/getAnagrafiche',
-    body
-  );
+  const response = await fetch(BMAN_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'text/xml; charset=utf-8',
+      'SOAPAction': 'http://cloud.bman.it/getAnagrafiche'
+    },
+    body: soapBody
+  });
 
-  return parseSoapResult(
-    xml,
-    'getAnagraficheResponse',
-    'getAnagraficheResult'
-  );
+  const xml = await response.text();
+
+  const parsed = await xml2js.parseStringPromise(xml, { explicitArray: false });
+
+  const result =
+    parsed?.['soap:Envelope']?.['soap:Body']?.['getAnagraficheResponse']?.['getAnagraficheResult'];
+
+  return JSON.parse(result || '[]');
 }
 
 /* =========================================================
-   STEP 2 – Script = SI
+   API STEP 2 – SCRIPT = SI (DA BMAN)
    ========================================================= */
+
 app.get('/api/step2/script-si', async (req, res) => {
   try {
-    const articoli = await getAnagrafiche({
-      filtri: [],          // NESSUN filtro lato BMAN
-      listaDepositi: [1],  // deposito NEGOZIO
+    const articoli = await getAnagrafiche();
+
+    // sicurezza extra: normalizzazione lato server
+    const filtrati = articoli.filter(a => {
+      return normalizeValue(a.opzionale11) === 'si';
     });
 
-    const filtrati = articoli.filter(
-      (a) => normalize(a.opzionale11) === 'si'
-    );
-
-    console.log('Totale articoli BMAN:', articoli.length);
-    console.log('Script = SI:', filtrati.length);
+    console.log(`📦 Articoli ricevuti da Bman: ${articoli.length}`);
+    console.log(`✅ Articoli Script=SI: ${filtrati.length}`);
 
     res.json({
       ok: true,
       step: 'STEP 2 – Script = SI',
       totale: filtrati.length,
-      articoli: filtrati,
+      articoli: filtrati
     });
+
   } catch (err) {
-    console.error('❌ STEP 2 errore:', err);
+    console.error('❌ Errore getAnagrafiche:', err);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
 /* =========================================================
-   DEBUG RAW
+   DEBUG – RAW (UTILE)
    ========================================================= */
+
 app.get('/api/debug/anagrafiche-raw', async (req, res) => {
   try {
-    const data = await getAnagrafiche({ listaDepositi: [1] });
+    const articoli = await getAnagrafiche();
+
     res.json({
       ok: true,
-      totale: data.length,
-      sample: data.slice(0, 5),
+      totale: articoli.length,
+      sample: articoli.slice(0, 5)
     });
+
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
 /* =========================================================
-   ROOT
+   HEALTH CHECK
    ========================================================= */
+
 app.get('/', (req, res) => {
-  res.send('🚀 SyncFED – STEP 2 OK – Node 16');
+  res.send('🚀 SyncFED attivo – getAnagrafiche OK – Node 20');
 });
 
 /* =========================================================
-   START
+   START SERVER
    ========================================================= */
+
 app.listen(PORT, () => {
-  console.log(`🚀 Server avviato sulla porta ${PORT}`);
+  console.log(`🚀 SyncFED avviato sulla porta ${PORT}`);
 });
