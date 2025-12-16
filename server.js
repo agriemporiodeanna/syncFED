@@ -3,8 +3,8 @@ console.log('OPENSSL VERSION =', process.versions.openssl);
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import xml2js from 'xml2js';
 import fetch from 'node-fetch';
+import xml2js from 'xml2js';
 import { google } from 'googleapis';
 
 const app = express();
@@ -14,11 +14,11 @@ app.use(express.json());
 const PORT = process.env.PORT || 10000;
 
 /* =========================================================
-   CONFIGURAZIONE BMAN
+   CONFIG BMAN
    ========================================================= */
 
 const BMAN_ENDPOINT = 'https://emporiodeanna.bman.it/bmanapi.asmx';
-const BMAN_CHIAVE = process.env.BMAN_API_KEY || '';
+const BMAN_CHIAVE = process.env.BMAN_API_KEY;
 
 if (!BMAN_CHIAVE) {
   console.error('❌ BMAN_API_KEY mancante');
@@ -28,9 +28,9 @@ if (!BMAN_CHIAVE) {
    NORMALIZZAZIONE
    ========================================================= */
 
-function normalize(value) {
-  if (value === null || value === undefined) return '';
-  return String(value)
+function norm(v) {
+  return (v ?? '')
+    .toString()
     .trim()
     .toLowerCase()
     .normalize('NFD')
@@ -38,64 +38,60 @@ function normalize(value) {
 }
 
 /* =========================================================
-   SOAP HELPERS
+   SOAP HELPER
    ========================================================= */
 
-async function soapCall(action, bodyXml) {
-  const response = await fetch(BMAN_ENDPOINT, {
+async function soapCall(action, body) {
+  const res = await fetch(BMAN_ENDPOINT, {
     method: 'POST',
     headers: {
       'Content-Type': 'text/xml; charset=utf-8',
       SOAPAction: action,
     },
-    body: bodyXml,
+    body,
   });
-
-  return response.text();
+  return res.text();
 }
 
-async function parseSoapJson(xml, responseTag, resultTag) {
+async function parseSoapResult(xml, responseTag, resultTag) {
   const parsed = await xml2js.parseStringPromise(xml, { explicitArray: false });
-  const result =
+  const json =
     parsed?.['soap:Envelope']?.['soap:Body']?.[responseTag]?.[resultTag];
-
-  if (!result) return [];
-  if (typeof result === 'string') return JSON.parse(result);
-  return result;
+  try {
+    return JSON.parse(json || '[]');
+  } catch {
+    return [];
+  }
 }
 
 /* =========================================================
-   BMAN – getAnagrafiche (STANDARD)
+   BMAN – getAnagrafiche (VERSIONE STABILE)
    ========================================================= */
 
-async function getAnagrafiche({
-  pagina = 1,
-  depositi = [],
-  filtri = [],
-} = {}) {
-  const soapBody = `<?xml version="1.0" encoding="utf-8"?>
+async function getAnagrafiche() {
+  const body = `<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                xmlns:xsd="http://www.w3.org/2001/XMLSchema"
                xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
     <getAnagrafiche xmlns="http://cloud.bman.it/">
       <chiave>${BMAN_CHIAVE}</chiave>
-      <filtri><![CDATA[${JSON.stringify(filtri)}]]></filtri>
+      <filtri><![CDATA[[]]]></filtri>
       <ordinamentoCampo>ID</ordinamentoCampo>
       <ordinamentoDirezione>1</ordinamentoDirezione>
-      <numeroPagina>${pagina}</numeroPagina>
-      <listaDepositi><![CDATA[${JSON.stringify(depositi)}]]></listaDepositi>
+      <numeroPagina>1</numeroPagina>
+      <listaDepositi><![CDATA[[1]]]></listaDepositi>
       <dettaglioVarianti>false</dettaglioVarianti>
     </getAnagrafiche>
   </soap:Body>
-</soap:Envelope>`.trim();
+</soap:Envelope>`;
 
   const xml = await soapCall(
     'http://cloud.bman.it/getAnagrafiche',
-    soapBody
+    body
   );
 
-  return parseSoapJson(
+  return parseSoapResult(
     xml,
     'getAnagraficheResponse',
     'getAnagraficheResult'
@@ -103,21 +99,7 @@ async function getAnagrafiche({
 }
 
 /* =========================================================
-   GOOGLE SHEETS
-   ========================================================= */
-
-function getGoogleClient() {
-  const auth = new google.auth.JWT({
-    email: process.env.GOOGLE_CLIENT_EMAIL,
-    key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-  });
-
-  return google.sheets({ version: 'v4', auth });
-}
-
-/* =========================================================
-   API – STEP 2 (Script = SI)
+   STEP 2 – Script = SI  ✅ FUNZIONANTE
    ========================================================= */
 
 app.get('/api/step2/script-si', async (req, res) => {
@@ -125,7 +107,7 @@ app.get('/api/step2/script-si', async (req, res) => {
     const articoli = await getAnagrafiche();
 
     const filtrati = articoli.filter(
-      (a) => normalize(a?.opzionale11) === 'si'
+      a => norm(a?.opzionale11) === 'si'
     );
 
     res.json({
@@ -133,53 +115,119 @@ app.get('/api/step2/script-si', async (req, res) => {
       totale: filtrati.length,
       articoli: filtrati,
     });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ ok: false, error: err.message });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 /* =========================================================
-   API – STEP 3 (TEST Google Sheet)
+   GOOGLE SHEETS – AUTH
+   ========================================================= */
+
+async function getSheetsClient() {
+  const {
+    GOOGLE_SHEET_ID,
+    GOOGLE_CLIENT_EMAIL,
+    GOOGLE_PRIVATE_KEY,
+  } = process.env;
+
+  if (!GOOGLE_SHEET_ID || !GOOGLE_CLIENT_EMAIL || !GOOGLE_PRIVATE_KEY) {
+    throw new Error('Variabili Google Sheet mancanti');
+  }
+
+  const auth = new google.auth.JWT({
+    email: GOOGLE_CLIENT_EMAIL,
+    key: GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+  });
+
+  await auth.authorize();
+
+  return {
+    sheets: google.sheets({ version: 'v4', auth }),
+    sheetId: GOOGLE_SHEET_ID,
+  };
+}
+
+/* =========================================================
+   STEP 3 – SCRITTURA GOOGLE SHEET ✅
    ========================================================= */
 
 app.get('/api/step3/export-sheet', async (req, res) => {
   try {
-    const sheets = getGoogleClient();
-    const sheetId = process.env.GOOGLE_SHEET_ID;
+    // stessi dati dello STEP 2
+    const articoli = await getAnagrafiche();
+    const filtrati = articoli.filter(
+      a => norm(a?.opzionale11) === 'si'
+    );
 
-    const headers = ['TEST', 'DATA', 'NOTE'];
-    const rows = [
-      ['OK', new Date().toISOString(), 'Scrittura di test riuscita'],
+    const rows = filtrati.map(a => [
+      a.ID || '',
+      a.codice || '',
+      a.opzionale2 || '',     // Titolo
+      a.tag || '',
+      a.descrizioneHtml || '',
+      a.opzionale11 || '',
+    ]);
+
+    const headers = [
+      'ID',
+      'Codice',
+      'Titolo',
+      'Tag',
+      'DescrizioneHTML',
+      'Script',
     ];
 
+    const { sheets, sheetId } = await getSheetsClient();
+    const sheetName = 'Sheet1';
+
+    // header
     await sheets.spreadsheets.values.update({
       spreadsheetId: sheetId,
-      range: 'Sheet1!A1',
+      range: `${sheetName}!A1`,
       valueInputOption: 'RAW',
-      requestBody: { values: [headers, ...rows] },
+      requestBody: { values: [headers] },
     });
+
+    // clear + write
+    await sheets.spreadsheets.values.clear({
+      spreadsheetId: sheetId,
+      range: `${sheetName}!A2:Z`,
+    });
+
+    if (rows.length) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: sheetId,
+        range: `${sheetName}!A2`,
+        valueInputOption: 'RAW',
+        requestBody: { values: rows },
+      });
+    }
 
     res.json({
       ok: true,
-      message: 'Scrittura di TEST su Google Sheet completata',
+      step: 'STEP 3 – Export Google Sheet',
+      scritti: rows.length,
     });
-  } catch (err) {
-    console.error('❌ Google Sheet error:', err);
-    res.status(500).json({ ok: false, error: err.message });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 /* =========================================================
-   HEALTH CHECK
+   DEBUG
    ========================================================= */
 
-app.get('/', (req, res) => {
-  res.send('🚀 SyncFED attivo – getAnagrafiche + Google Sheet TEST');
+app.get('/api/debug/anagrafiche-raw', async (req, res) => {
+  const a = await getAnagrafiche();
+  res.json({ ok: true, totale: a.length, sample: a.slice(0, 5) });
 });
 
 /* =========================================================
-   START SERVER
+   START
    ========================================================= */
 
 app.listen(PORT, () => {
