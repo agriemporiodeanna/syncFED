@@ -43,16 +43,16 @@ async function getAnagraficheV4Raw() {
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xmlns:xsd="http://www.w3.org/2001/XMLSchema"
   xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
-  <soap:Body>
-    <getAnagraficheV4 xmlns="http://cloud.bman.it/">
-      <chiave>${BMAN_CHIAVE}</chiave>
-      <filtri></filtri>
-      <ordinamentoCampo>ID</ordinamentoCampo>
-      <ordinamentoDirezione>1</ordinamentoDirezione>
-      <numeroPagina>1</numeroPagina>
-      <listaDepositi>[1]</listaDepositi>
-      <dettaglioVarianti>false</dettaglioVarianti>
-    </getAnagraficheV4>
+  <soap:Body><getAnagraficheV4 xmlns="http://cloud.bman.it/">
+  <chiave>${BMAN_CHIAVE}</chiave>
+  <tipoArt>1</tipoArt>
+  <filtri>[]</filtri>
+  <ordinamentoCampo>ID</ordinamentoCampo>
+  <ordinamentoDirezione>1</ordinamentoDirezione>
+  <numeroPagina>1</numeroPagina>
+  <listaDepositi>[1]</listaDepositi>
+  <dettaglioVarianti>false</dettaglioVarianti>
+</getAnagraficheV4>
   </soap:Body>
 </soap:Envelope>`.trim();
 
