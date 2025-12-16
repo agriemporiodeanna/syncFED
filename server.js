@@ -1,3 +1,5 @@
+console.log('NODE VERSION =', process.version);
+console.log('OPENSSL VERSION =', process.versions.openssl);
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
