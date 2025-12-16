@@ -2,16 +2,17 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import xml2js from 'xml2js';
+import fetch from 'node-fetch';
 import { google } from 'googleapis';
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 
 /* =========================================================
-   CONFIGURAZIONE BMAN (SOAP)
+   CONFIGURAZIONE BMAN
    ========================================================= */
 
 const BMAN_ENDPOINT = 'https://emporiodeanna.bman.it/bmanapi.asmx';
@@ -25,9 +26,9 @@ if (!BMAN_CHIAVE) {
    NORMALIZZAZIONE
    ========================================================= */
 
-function normalizeValue(value) {
-  if (value === null || value === undefined) return '';
-  return String(value)
+function normalizeValue(v) {
+  if (v === null || v === undefined) return '';
+  return String(v)
     .trim()
     .toLowerCase()
     .normalize('NFD')
@@ -35,54 +36,59 @@ function normalizeValue(value) {
 }
 
 /* =========================================================
-   HELPERS SOAP
+   SOAP HELPERS
    ========================================================= */
 
-async function soapCall({ action, bodyXml }) {
-  const response = await fetch(BMAN_ENDPOINT, {
+async function soapCall(action, body) {
+  const res = await fetch(BMAN_ENDPOINT, {
     method: 'POST',
     headers: {
       'Content-Type': 'text/xml; charset=utf-8',
       SOAPAction: action,
     },
-    body: bodyXml,
+    body,
   });
-  return response.text();
+
+  return res.text();
 }
 
-async function parseSoapJsonResult(xml, responseTag, resultTag) {
+async function parseSoapJson(xml, responseTag, resultTag) {
   const parsed = await xml2js.parseStringPromise(xml, { explicitArray: false });
   const result =
     parsed?.['soap:Envelope']?.['soap:Body']?.[responseTag]?.[resultTag];
 
+  if (!result) return [];
+
   if (typeof result === 'string') {
     try {
-      return JSON.parse(result || '[]');
+      return JSON.parse(result);
     } catch {
       return [];
     }
   }
-  return Array.isArray(result) ? result : [];
+  return result;
 }
 
 /* =========================================================
-   BMAN: getAnagraficheV4
+   BMAN – getAnagrafiche (STANDARD)
    ========================================================= */
 
-async function getAnagraficheV4({
+async function getAnagrafiche({
   numeroPagina = 1,
   listaDepositi = [],
-  dettaglioVarianti = false,
+  filtri = [],
   ordinamentoCampo = 'ID',
   ordinamentoDirezione = 1,
-  filtri = [],
+  dettaglioVarianti = false,
 } = {}) {
-  const soapBody = `<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-               xmlns:xsd="http://www.w3.org/2001/XMLSchema"
-               xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  const soapBody = `
+<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+  xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
-    <getAnagraficheV4 xmlns="http://cloud.bman.it/">
+    <getAnagrafiche xmlns="http://cloud.bman.it/">
       <chiave>${BMAN_CHIAVE}</chiave>
       <filtri><![CDATA[${JSON.stringify(filtri)}]]></filtri>
       <ordinamentoCampo>${ordinamentoCampo}</ordinamentoCampo>
@@ -90,30 +96,35 @@ async function getAnagraficheV4({
       <numeroPagina>${numeroPagina}</numeroPagina>
       <listaDepositi><![CDATA[${JSON.stringify(listaDepositi)}]]></listaDepositi>
       <dettaglioVarianti>${dettaglioVarianti}</dettaglioVarianti>
-    </getAnagraficheV4>
+    </getAnagrafiche>
   </soap:Body>
 </soap:Envelope>`.trim();
 
-  const xml = await soapCall({
-    action: 'http://cloud.bman.it/getAnagraficheV4',
-    bodyXml: soapBody,
-  });
+  const xml = await soapCall(
+    'http://cloud.bman.it/getAnagrafiche',
+    soapBody
+  );
 
-  return parseSoapJsonResult(xml, 'getAnagraficheV4Response', 'getAnagraficheV4Result');
+  return parseSoapJson(
+    xml,
+    'getAnagraficheResponse',
+    'getAnagraficheResult'
+  );
 }
 
 /* =========================================================
    GOOGLE SHEETS
    ========================================================= */
 
-function getGoogleCredentials() {
-  const required = ['GOOGLE_SHEET_ID', 'GOOGLE_CLIENT_EMAIL', 'GOOGLE_PRIVATE_KEY_BASE64'];
-  const missing = required.filter((k) => !process.env[k]);
+function getGoogleCreds() {
+  const missing = [
+    'GOOGLE_SHEET_ID',
+    'GOOGLE_CLIENT_EMAIL',
+    'GOOGLE_PRIVATE_KEY_BASE64',
+  ].filter((k) => !process.env[k]);
 
   if (missing.length) {
-    const err = new Error(`Variabili ambiente mancanti: ${missing.join(', ')}`);
-    err.code = 'MISSING_ENV';
-    throw err;
+    throw new Error(`Variabili ambiente mancanti: ${missing.join(', ')}`);
   }
 
   const privateKey = Buffer.from(
@@ -121,30 +132,35 @@ function getGoogleCredentials() {
     'base64'
   )
     .toString('utf8')
-    .replace(/\\n/g, '\n');
+    .replace(/\\n/g, '\n')
+    .trim();
 
   return {
     sheetId: process.env.GOOGLE_SHEET_ID,
-    clientEmail: process.env.GOOGLE_CLIENT_EMAIL,
-    privateKey,
+    email: process.env.GOOGLE_CLIENT_EMAIL,
+    key: privateKey,
   };
 }
 
-async function getSheetsClient() {
-  const creds = getGoogleCredentials();
+async function getSheets() {
+  const { sheetId, email, key } = getGoogleCreds();
 
   const auth = new google.auth.JWT({
-    email: creds.clientEmail,
-    key: creds.privateKey,
+    email,
+    key,
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
 
   await auth.authorize();
-  return { sheets: google.sheets({ version: 'v4', auth }), sheetId: creds.sheetId };
+
+  return {
+    sheets: google.sheets({ version: 'v4', auth }),
+    sheetId,
+  };
 }
 
 /* =========================================================
-   MAPPATURA SHEET
+   MAPPATURA GOOGLE SHEET
    ========================================================= */
 
 const SHEET_HEADERS = [
@@ -161,13 +177,13 @@ const SHEET_HEADERS = [
   'Script',
 ];
 
-function toRowFromAnagrafica(a) {
+function mapRow(a) {
   const fotos = Array.isArray(a?.arrFoto) ? a.arrFoto : [];
   return [
     a?.ID ?? '',
     a?.codice ?? '',
     a?.opzionale2 ?? '',
-    a?.tags ?? '',
+    a?.tag ?? '',
     a?.descrizioneHtml ?? '',
     fotos[0] ?? '',
     fotos[1] ?? '',
@@ -183,56 +199,83 @@ function toRowFromAnagrafica(a) {
    ========================================================= */
 
 app.get('/', (req, res) => {
-  res.send('🚀 SyncFED attivo – Bman SOAP + Google Sheet');
+  res.send('🚀 SyncFED attivo – getAnagrafiche + Google Sheet');
 });
 
-app.get('/api/step3/export-sheet', async (req, res) => {
+/* STEP 2 – Script = SI */
+app.get('/api/step2/script-si', async (req, res) => {
   try {
-    const articoli = await getAnagraficheV4();
-    const filtrati = articoli.filter((a) => normalizeValue(a?.opzionale11) === 'si');
-    const rows = filtrati.map(toRowFromAnagrafica);
-
-    const { sheets, sheetId } = await getSheetsClient();
-    const range = 'Sheet1!A1';
-
-    await sheets.spreadsheets.values.clear({
-      spreadsheetId: sheetId,
-      range: 'Sheet1',
+    const articoli = await getAnagrafiche({
+      filtri: [],
+      numeroPagina: 1,
     });
 
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: sheetId,
-      range,
-      valueInputOption: 'RAW',
-      requestBody: {
-        values: [SHEET_HEADERS, ...rows],
-      },
-    });
+    const filtrati = articoli.filter(
+      (a) => normalizeValue(a?.opzionale11) === 'si'
+    );
 
     res.json({
       ok: true,
-      totale: rows.length,
+      totale: filtrati.length,
+      articoli: filtrati,
     });
   } catch (err) {
-    console.error('❌ STEP 3:', err.message);
+    console.error(err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/* STEP 3 – Scrittura Google Sheet */
+app.get('/api/step3/export-sheet', async (req, res) => {
+  try {
+    const articoli = await getAnagrafiche({
+      filtri: [],
+      numeroPagina: 1,
+    });
+
+    const filtrati = articoli.filter(
+      (a) => normalizeValue(a?.opzionale11) === 'si'
+    );
+
+    const rows = filtrati.map(mapRow);
+
+    const { sheets, sheetId } = await getSheets();
+
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: sheetId,
+      range: 'Sheet1!1:1',
+      valueInputOption: 'RAW',
+      requestBody: { values: [SHEET_HEADERS] },
+    });
+
+    await sheets.spreadsheets.values.clear({
+      spreadsheetId: sheetId,
+      range: 'Sheet1!2:10000',
+    });
+
+    if (rows.length) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: sheetId,
+        range: 'Sheet1!2',
+        valueInputOption: 'RAW',
+        requestBody: { values: rows },
+      });
+    }
+
+    res.json({
+      ok: true,
+      totaleScritti: rows.length,
+    });
+  } catch (err) {
+    console.error(err);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
 /* =========================================================
-   START SERVER
+   START
    ========================================================= */
 
 app.listen(PORT, () => {
   console.log(`🚀 SyncFED avviato sulla porta ${PORT}`);
-  if (BMAN_CHIAVE) console.log('✅ BMAN_API_KEY presente');
-
-  const missingGoogle = ['GOOGLE_SHEET_ID', 'GOOGLE_CLIENT_EMAIL', 'GOOGLE_PRIVATE_KEY_BASE64']
-    .filter((k) => !process.env[k]);
-
-  if (missingGoogle.length) {
-    console.log(`ℹ️ Google Sheet non configurato: mancano ${missingGoogle.join(', ')}`);
-  } else {
-    console.log('✅ Google Sheet env presenti');
-  }
 });
