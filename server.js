@@ -38,7 +38,6 @@ function normalizeValue(value) {
 
 async function getAnagrafiche() {
   const filtri = [
-    { chiave: 'bmanShop', operatore: '=', valore: 'True' },
     { chiave: 'opzionale11', operatore: '=', valore: 'si' }
   ];
 
