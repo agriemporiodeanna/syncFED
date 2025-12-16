@@ -50,7 +50,7 @@ async function getAnagraficheV4Raw() {
       <ordinamentoCampo>ID</ordinamentoCampo>
       <ordinamentoDirezione>1</ordinamentoDirezione>
       <numeroPagina>1</numeroPagina>
-      <listaDepositi>1</listaDepositi>
+      <listaDepositi>[1]</listaDepositi>
       <dettaglioVarianti>false</dettaglioVarianti>
     </getAnagraficheV4>
   </soap:Body>
