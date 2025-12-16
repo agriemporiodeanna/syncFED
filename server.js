@@ -404,7 +404,7 @@ app.listen(PORT, () => {
   if (BMAN_CHIAVE) console.log('✅ BMAN_API_KEY presente');
 
   const missingGoogle = ['GOOGLE_SHEET_ID', 'GOOGLE_CLIENT_EMAIL', 'GOOGLE_PRIVATE_KEY_BASE64'].filter(
-    (k) => !process.env[k),
+    (k) => !process.env[k]),
   );
 
   if (missingGoogle.length) {
