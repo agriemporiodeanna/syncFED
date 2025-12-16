@@ -145,3 +145,61 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 SyncFED avviato sulla porta ${PORT}`);
 });
+
+import { google } from 'googleapis';
+
+app.get('/api/test/google', async (req, res) => {
+  try {
+    const required = [
+      'GOOGLE_CLIENT_EMAIL',
+      'GOOGLE_PRIVATE_KEY_BASE64',
+      'GOOGLE_SHEET_ID'
+    ];
+
+    const missing = required.filter(k => !process.env[k]);
+    if (missing.length) {
+      return res.status(500).json({
+        ok: false,
+        error: 'Variabili ambiente mancanti',
+        missing
+      });
+    }
+
+    const clientEmail = process.env.GOOGLE_CLIENT_EMAIL.trim();
+    const sheetId = process.env.GOOGLE_SHEET_ID.trim();
+
+    const privateKey = Buffer
+      .from(process.env.GOOGLE_PRIVATE_KEY_BASE64, 'base64')
+      .toString('utf8')
+      .replace(/\\n/g, '\n')
+      .trim();
+
+    const auth = new google.auth.JWT({
+      email: clientEmail,
+      key: privateKey,
+      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+    });
+
+    await auth.authorize();
+
+    const sheets = google.sheets({ version: 'v4', auth });
+    const meta = await sheets.spreadsheets.get({
+      spreadsheetId: sheetId,
+    });
+
+    res.json({
+      ok: true,
+      message: 'Chiave Google valida',
+      spreadsheetTitle: meta.data.properties.title,
+      sheets: meta.data.sheets.map(s => s.properties.title)
+    });
+
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: err.message,
+      code: err.code || 'n/a'
+    });
+  }
+});
+
