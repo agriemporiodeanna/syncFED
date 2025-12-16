@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import fetch from 'node-fetch';
 import bodyParser from 'body-parser';
@@ -8,12 +9,6 @@ const app = express();
 app.use(bodyParser.json());
 
 const PORT = process.env.PORT || 10000;
-
-/* =========================================================
-   LOG AMBIENTE
-   ========================================================= */
-console.log('NODE VERSION =', process.version);
-console.log('OPENSSL VERSION =', process.versions.openssl);
 
 /* =========================================================
    CONFIGURAZIONE BMAN
@@ -27,7 +22,7 @@ if (!BMAN_CHIAVE) {
 }
 
 /* =========================================================
-   NORMALIZZAZIONE ROBUSTA
+   NORMALIZZAZIONE
    ========================================================= */
 
 function normalizeValue(value) {
@@ -40,10 +35,10 @@ function normalizeValue(value) {
 }
 
 /* =========================================================
-   SOAP getAnagrafiche (BASE STABILE)
+   SOAP getAnagrafiche (STABILE)
    ========================================================= */
 
-async function getAnagrafiche() {
+async function getAnagraficheScriptSI() {
   const filtri = [
     { chiave: 'opzionale11', operatore: '=', valore: 'si' }
   ];
@@ -61,7 +56,7 @@ async function getAnagrafiche() {
       <ordinamentoCampo>ID</ordinamentoCampo>
       <ordinamentoDirezione>1</ordinamentoDirezione>
       <numeroPagina>1</numeroPagina>
-      <listaDepositi><![CDATA[[1]]]></listaDepositi>
+      <listaDepositi><![CDATA[]]></listaDepositi>
       <dettaglioVarianti>false</dettaglioVarianti>
     </getAnagrafiche>
   </soap:Body>
@@ -82,113 +77,119 @@ async function getAnagrafiche() {
   const result =
     parsed?.['soap:Envelope']?.['soap:Body']?.['getAnagraficheResponse']?.['getAnagraficheResult'];
 
-  return JSON.parse(result || '[]');
+  const articoli = JSON.parse(result || '[]');
+
+  return articoli.filter(a => normalizeValue(a.opzionale11) === 'si');
 }
 
 /* =========================================================
-   STEP 2 – SCRIPT = SI (OK)
+   GOOGLE SHEETS – CLIENT
+   ========================================================= */
+
+async function getSheetsClient() {
+  const required = ['GOOGLE_CLIENT_EMAIL', 'GOOGLE_PRIVATE_KEY', 'GOOGLE_SHEET_ID'];
+  const missing = required.filter(k => !process.env[k]);
+
+  if (missing.length) {
+    throw new Error(`Variabili ambiente mancanti: ${missing.join(', ')}`);
+  }
+
+  const auth = new google.auth.JWT({
+    email: process.env.GOOGLE_CLIENT_EMAIL,
+    key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+  });
+
+  await auth.authorize();
+
+  return {
+    sheets: google.sheets({ version: 'v4', auth }),
+    sheetId: process.env.GOOGLE_SHEET_ID,
+  };
+}
+
+/* =========================================================
+   API – STEP 2
    ========================================================= */
 
 app.get('/api/step2/script-si', async (req, res) => {
   try {
-    const articoli = await getAnagrafiche();
-
-    const filtrati = articoli.filter(a =>
-      normalizeValue(a.opzionale11) === 'si'
-    );
-
-    console.log(`📦 Articoli ricevuti: ${articoli.length}`);
-    console.log(`✅ Articoli Script=SI: ${filtrati.length}`);
+    const articoli = await getAnagraficheScriptSI();
 
     res.json({
       ok: true,
       step: 'STEP 2 – Script = SI',
-      totale: filtrati.length,
-      articoli: filtrati
+      totale: articoli.length,
+      articoli,
     });
 
   } catch (err) {
-    console.error('❌ Errore STEP 2:', err);
+    console.error(err);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
 /* =========================================================
-   TEST GOOGLE KEY – DA BROWSER
+   API – STEP 3 (TEST SCRITTURA GOOGLE SHEET)
    ========================================================= */
 
-app.get('/api/test/google-key', async (req, res) => {
+app.get('/api/step3/export-sheet', async (req, res) => {
   try {
-    const email = process.env.GOOGLE_CLIENT_EMAIL;
-    const keyRaw = process.env.GOOGLE_PRIVATE_KEY;
+    const articoli = await getAnagraficheScriptSI();
+    const primo = articoli[0];
 
-    if (!email || !keyRaw) {
-      return res.status(500).json({
-        ok: false,
-        error: 'Variabili ambiente mancanti',
-        missing: [
-          !email ? 'GOOGLE_CLIENT_EMAIL' : null,
-          !keyRaw ? 'GOOGLE_PRIVATE_KEY' : null
-        ].filter(Boolean)
-      });
+    if (!primo) {
+      return res.json({ ok: false, error: 'Nessun articolo da scrivere' });
     }
 
-    // NORMALIZZAZIONE RAW (OBBLIGATORIA)
-    const privateKey = keyRaw.replace(/\\n/g, '\n');
+    const { sheets, sheetId } = await getSheetsClient();
 
-    const auth = new google.auth.JWT({
-      email,
-      key: privateKey,
-      scopes: ['https://www.googleapis.com/auth/cloud-platform']
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: sheetId,
+      range: 'Sheet1!A1:D2',
+      valueInputOption: 'RAW',
+      requestBody: {
+        values: [
+          ['ID', 'Codice', 'Titolo', 'Script'],
+          [
+            primo.ID,
+            primo.codice,
+            primo.opzionale2 || '',
+            primo.opzionale11
+          ]
+        ]
+      }
     });
-
-    await auth.authorize();
 
     res.json({
       ok: true,
-      message: 'Chiave Google valida – JWT firmato correttamente',
-      node: process.version
+      step: 'STEP 3 – Google Sheet',
+      scritto: true,
+      articoloTest: {
+        ID: primo.ID,
+        codice: primo.codice
+      }
     });
 
   } catch (err) {
-    console.error('❌ Errore Google test:', err);
-    res.status(500).json({
-      ok: false,
-      error: err.message,
-      code: err.code || 'UNKNOWN'
-    });
-  }
-});
-
-/* =========================================================
-   DEBUG RAW
-   ========================================================= */
-
-app.get('/api/debug/anagrafiche-raw', async (req, res) => {
-  try {
-    const articoli = await getAnagrafiche();
-    res.json({
-      ok: true,
-      totale: articoli.length,
-      sample: articoli.slice(0, 5)
-    });
-  } catch (err) {
+    console.error('❌ Errore STEP 3:', err);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
 /* =========================================================
-   ROOT / HEALTH
+   HEALTH
    ========================================================= */
 
 app.get('/', (req, res) => {
-  res.send('🚀 SyncFED attivo – STEP 2 OK – Google Test disponibile');
+  res.send('🚀 SyncFED attivo – STEP 2 OK – STEP 3 pronto');
 });
 
 /* =========================================================
-   START SERVER
+   START
    ========================================================= */
 
 app.listen(PORT, () => {
   console.log(`🚀 SyncFED avviato sulla porta ${PORT}`);
+  console.log(`Node: ${process.version}`);
 });
