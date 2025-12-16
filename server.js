@@ -1,7 +1,9 @@
+import 'dotenv/config';
 import express from 'express';
 import fetch from 'node-fetch';
 import bodyParser from 'body-parser';
 import xml2js from 'xml2js';
+import { google } from 'googleapis';
 
 const app = express();
 app.use(bodyParser.json());
@@ -20,7 +22,7 @@ if (!BMAN_CHIAVE) {
 }
 
 /* =========================================================
-   NORMALIZZAZIONE (ROBUSTA)
+   NORMALIZZAZIONE
    ========================================================= */
 
 function normalizeValue(value) {
@@ -33,7 +35,7 @@ function normalizeValue(value) {
 }
 
 /* =========================================================
-   SOAP getAnagrafiche (METODO CORRETTO)
+   SOAP – getAnagrafiche (VERSIONE FUNZIONANTE)
    ========================================================= */
 
 async function getAnagrafiche() {
@@ -50,13 +52,10 @@ async function getAnagrafiche() {
   <soap:Body>
     <getAnagrafiche xmlns="http://cloud.bman.it/">
       <chiave>${BMAN_CHIAVE}</chiave>
-
       <filtri><![CDATA[${JSON.stringify(filtri)}]]></filtri>
-
       <ordinamentoCampo>ID</ordinamentoCampo>
       <ordinamentoDirezione>1</ordinamentoDirezione>
       <numeroPagina>1</numeroPagina>
-
       <listaDepositi><![CDATA[[1]]]></listaDepositi>
       <dettaglioVarianti>false</dettaglioVarianti>
     </getAnagrafiche>
@@ -67,13 +66,12 @@ async function getAnagrafiche() {
     method: 'POST',
     headers: {
       'Content-Type': 'text/xml; charset=utf-8',
-      'SOAPAction': 'http://cloud.bman.it/getAnagrafiche'
+      SOAPAction: 'http://cloud.bman.it/getAnagrafiche'
     },
     body: soapBody
   });
 
   const xml = await response.text();
-
   const parsed = await xml2js.parseStringPromise(xml, { explicitArray: false });
 
   const result =
@@ -83,19 +81,18 @@ async function getAnagrafiche() {
 }
 
 /* =========================================================
-   API STEP 2 – SCRIPT = SI (DA BMAN)
+   STEP 2 – Script = SI (INVARIATO)
    ========================================================= */
 
 app.get('/api/step2/script-si', async (req, res) => {
   try {
     const articoli = await getAnagrafiche();
 
-    // sicurezza extra: normalizzazione lato server
-    const filtrati = articoli.filter(a => {
-      return normalizeValue(a.opzionale11) === 'si';
-    });
+    const filtrati = articoli.filter(a =>
+      normalizeValue(a.opzionale11) === 'si'
+    );
 
-    console.log(`📦 Articoli ricevuti da Bman: ${articoli.length}`);
+    console.log(`📦 Articoli ricevuti: ${articoli.length}`);
     console.log(`✅ Articoli Script=SI: ${filtrati.length}`);
 
     res.json({
@@ -106,53 +103,20 @@ app.get('/api/step2/script-si', async (req, res) => {
     });
 
   } catch (err) {
-    console.error('❌ Errore getAnagrafiche:', err);
+    console.error('❌ Errore STEP 2:', err);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
 /* =========================================================
-   DEBUG – RAW (UTILE)
+   TEST GOOGLE KEY (SOLO VERIFICA)
    ========================================================= */
-
-app.get('/api/debug/anagrafiche-raw', async (req, res) => {
-  try {
-    const articoli = await getAnagrafiche();
-
-    res.json({
-      ok: true,
-      totale: articoli.length,
-      sample: articoli.slice(0, 5)
-    });
-
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-/* =========================================================
-   HEALTH CHECK
-   ========================================================= */
-
-app.get('/', (req, res) => {
-  res.send('🚀 SyncFED attivo – getAnagrafiche OK – Node 20');
-});
-
-/* =========================================================
-   START SERVER
-   ========================================================= */
-
-app.listen(PORT, () => {
-  console.log(`🚀 SyncFED avviato sulla porta ${PORT}`);
-});
-
-import { google } from 'googleapis';
 
 app.get('/api/test/google', async (req, res) => {
   try {
     const required = [
       'GOOGLE_CLIENT_EMAIL',
-      'GOOGLE_PRIVATE_KEY_BASE64',
+      'GOOGLE_PRIVATE_KEY',
       'GOOGLE_SHEET_ID'
     ];
 
@@ -160,17 +124,14 @@ app.get('/api/test/google', async (req, res) => {
     if (missing.length) {
       return res.status(500).json({
         ok: false,
-        error: 'Variabili ambiente mancanti',
-        missing
+        error: `Variabili ambiente mancanti: ${missing.join(', ')}`
       });
     }
 
     const clientEmail = process.env.GOOGLE_CLIENT_EMAIL.trim();
     const sheetId = process.env.GOOGLE_SHEET_ID.trim();
 
-    const privateKey = Buffer
-      .from(process.env.GOOGLE_PRIVATE_KEY_BASE64, 'base64')
-      .toString('utf8')
+    const privateKey = process.env.GOOGLE_PRIVATE_KEY
       .replace(/\\n/g, '\n')
       .trim();
 
@@ -183,9 +144,7 @@ app.get('/api/test/google', async (req, res) => {
     await auth.authorize();
 
     const sheets = google.sheets({ version: 'v4', auth });
-    const meta = await sheets.spreadsheets.get({
-      spreadsheetId: sheetId,
-    });
+    const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId });
 
     res.json({
       ok: true,
@@ -195,6 +154,7 @@ app.get('/api/test/google', async (req, res) => {
     });
 
   } catch (err) {
+    console.error('❌ Errore Google test:', err);
     res.status(500).json({
       ok: false,
       error: err.message,
@@ -203,3 +163,18 @@ app.get('/api/test/google', async (req, res) => {
   }
 });
 
+/* =========================================================
+   HEALTH CHECK
+   ========================================================= */
+
+app.get('/', (req, res) => {
+  res.send('🚀 SyncFED attivo – STEP 2 stabile – Google test pronto');
+});
+
+/* =========================================================
+   START SERVER
+   ========================================================= */
+
+app.listen(PORT, () => {
+  console.log(`🚀 SyncFED avviato sulla porta ${PORT}`);
+});
