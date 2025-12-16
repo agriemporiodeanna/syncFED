@@ -7,7 +7,7 @@ const CAMPI_BMAN = [
   "Brand",
   "Titolo",
   "Etichetta",
-  "Vinted",
+  "Vintage",
   "Script",
   "Magazzino",
   "Tag",
