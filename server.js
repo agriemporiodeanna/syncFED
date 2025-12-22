@@ -1,257 +1,202 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import fetch from 'node-fetch';
-import xml2js from 'xml2js';
+import fs from 'fs';
+import path from 'path';
 import { google } from 'googleapis';
-import archiver from 'archiver';
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '20mb' }));
+app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 
 /* =========================================================
-   CONFIG BMAN
+   GOOGLE SHEETS
    ========================================================= */
-const BMAN_ENDPOINT = 'https://emporiodeanna.bman.it/bmanapi.asmx';
-const BMAN_CHIAVE = process.env.BMAN_API_KEY || '';
 
-/* =========================================================
-   UTIL
-   ========================================================= */
-function normalize(v) {
-  return String(v ?? '').trim().toLowerCase();
+function getEnv(name) {
+  return String(process.env[name] || '').trim();
 }
 
-function safeParse(json) {
-  try { return JSON.parse(json); } catch { return []; }
-}
-
-/* =========================================================
-   SOAP
-   ========================================================= */
-async function soapCall(action, body) {
-  const r = await fetch(BMAN_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'text/xml; charset=utf-8',
-      SOAPAction: action,
-    },
-    body,
+function getGoogleClient() {
+  const auth = new google.auth.JWT({
+    email: getEnv('GOOGLE_CLIENT_EMAIL'),
+    key: getEnv('GOOGLE_PRIVATE_KEY').replace(/\\n/g, '\n'),
+    scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
   });
-  return r.text();
-}
 
-async function getAnagrafiche({ page = 1, filtri = [] }) {
-  const body = `<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
-  <soap:Body>
-    <getAnagrafiche xmlns="http://cloud.bman.it/">
-      <chiave>${BMAN_CHIAVE}</chiave>
-      <filtri><![CDATA[${JSON.stringify(filtri)}]]></filtri>
-      <ordinamentoCampo>ID</ordinamentoCampo>
-      <ordinamentoDirezione>1</ordinamentoDirezione>
-      <numeroPagina>${page}</numeroPagina>
-      <listaDepositi><![CDATA[]]></listaDepositi>
-      <dettaglioVarianti>false</dettaglioVarianti>
-    </getAnagrafiche>
-  </soap:Body>
-</soap:Envelope>`;
-
-  const xml = await soapCall('http://cloud.bman.it/getAnagrafiche', body);
-  const parsed = await xml2js.parseStringPromise(xml, { explicitArray: false });
-  const res = parsed?.['soap:Envelope']?.['soap:Body']?.['getAnagraficheResponse']?.['getAnagraficheResult'];
-  return safeParse(res);
-}
-
-/* =========================================================
-   STEP 2 – TUTTI SCRIPT=SI
-   ========================================================= */
-async function getAllScriptSI() {
-  const out = [];
-  let page = 1;
-
-  while (true) {
-    const chunk = await getAnagrafiche({
-      page,
-      filtri: [{ chiave: 'opzionale11', operatore: '=', valore: 'si' }],
-    });
-    if (!chunk.length) break;
-    out.push(...chunk.filter(a => normalize(a.opzionale11) === 'si'));
-    if (chunk.length < 50) break;
-    page++;
-  }
-  return out;
-}
-
-/* =========================================================
-   GOOGLE SHEET
-   ========================================================= */
-function googleCreds() {
   return {
-    sheetId: process.env.GOOGLE_SHEET_ID,
-    email: process.env.GOOGLE_CLIENT_EMAIL,
-    key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    sheets: google.sheets({ version: 'v4', auth }),
+    sheetId: getEnv('GOOGLE_SHEET_ID'),
+    sheetTab: getEnv('GOOGLE_SHEET_TAB') || 'PRODOTTI_BMAN',
   };
 }
 
-async function sheetsClient() {
-  const c = googleCreds();
-  const auth = new google.auth.JWT({
-    email: c.email,
-    key: c.key,
-    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-  });
-  await auth.authorize();
-  return { sheets: google.sheets({ version: 'v4', auth }), sheetId: c.sheetId };
-}
-
-const TAB = 'PRODOTTI_BMAN';
-
-const HEADERS = [
-  'ID','Codice','Titolo','Brand','Tag15','Script',
-  'Descrizione_IT','Titolo_FR','Descrizione_FR',
-  'Titolo_ES','Descrizione_ES',
-  'Titolo_DE','Descrizione_DE',
-  'Titolo_EN','Descrizione_EN',
-  'Foto_1','Foto_2','Foto_3','Foto_4','Foto_5',
-  'ProfonditaCM','PesoKG','UnitaMisura',
-  'Sottoscorta','RiordinoMinimo','Stato','UltimoSync'
-];
-
-function rowFromBman(a) {
-  return [
-    a.ID, a.codice,
-    a.opzionale2, a.opzionale1, '',
-    a.opzionale11,
-    a.opzionale12,
-    a.opzionale6, '',
-    a.opzionale8, '',
-    a.opzionale9, '',
-    a.opzionale7, '',
-    ...(a.arrFoto || []).slice(0,5),
-    '', '', '', '', '', '', ''
-  ];
-}
-
-/* =========================================================
-   STEP 3 – EXPORT
-   ========================================================= */
-app.get('/api/step3/export', async (req,res)=>{
-  try {
-    const articoli = await getAllScriptSI();
-    const { sheets, sheetId } = await sheetsClient();
-
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: sheetId,
-      range: `${TAB}!A1:AA1`,
-      valueInputOption: 'RAW',
-      requestBody: { values: [HEADERS] },
-    });
-
-    await sheets.spreadsheets.values.clear({
-      spreadsheetId: sheetId,
-      range: `${TAB}!A2:AA`,
-    });
-
-    const rows = articoli.map(rowFromBman);
-    if (rows.length) {
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: sheetId,
-        range: `${TAB}!A2`,
-        valueInputOption: 'RAW',
-        requestBody: { values: rows },
-      });
-    }
-
-    res.json({ ok:true, esportati: rows.length });
-  } catch(e){
-    res.status(500).json({ ok:false, error:e.message });
-  }
-});
-
-/* =========================================================
-   ANALISI VINTED + DOWNLOAD ZIP
-   ========================================================= */
-app.get('/api/vinted/analyze', async (req,res)=>{
-  const codice = String(req.query.codice || '').trim();
-  if (!codice) return res.status(400).json({ ok:false });
-
-  const { sheets, sheetId } = await sheetsClient();
-  const r = await sheets.spreadsheets.values.get({
+async function readSheet() {
+  const { sheets, sheetId, sheetTab } = getGoogleClient();
+  const res = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB}!A2:AA`,
+    range: `${sheetTab}!A1:Z`,
   });
 
-  const row = (r.data.values||[]).find(x=>x[1]===codice);
-  if (!row) return res.json({ ok:false });
-
-  const foto = row.slice(15,20).filter(Boolean);
-  const ok =
-    foto.length>0 &&
-    row[6] && row[8] && row[10];
-
-  if (!ok) return res.json({ ok:false });
-
-  res.setHeader('Content-Type','application/zip');
-  res.setHeader('Content-Disposition',`attachment; filename=${codice}_VINTED.zip`);
-
-  const zip = archiver('zip');
-  zip.pipe(res);
-
-  // descrizione.doc
-  const doc =
-`${row[2]}
-${row[6]}
-
-${row[7]}
-${row[8]}
-
-${row[9]}
-${row[10]}`;
-  zip.append(doc,{ name:'descrizione.doc' });
-
-  // foto
-  for (let i=0;i<foto.length;i++){
-    const img = await fetch(foto[i]).then(r=>r.buffer());
-    zip.append(img,{ name:`foto_${i+1}.jpg` });
-  }
-
-  zip.finalize();
-});
+  const [headers, ...rows] = res.data.values;
+  return rows.map(r => {
+    const obj = {};
+    headers.forEach((h, i) => (obj[h] = r[i] || ''));
+    return obj;
+  });
+}
 
 /* =========================================================
    DASHBOARD
    ========================================================= */
-app.get('/',(req,res)=>{
-res.send(`
-<!doctype html>
-<html><body style="font-family:Arial;padding:20px">
-<h1>SyncFED – Vinted</h1>
-<input id="c" placeholder="Codice articolo"/>
-<button onclick="go()">Analizza per Vinted</button>
-<pre id="o"></pre>
+
+app.get('/dashboard', async (req, res) => {
+  res.send(`<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8"/>
+<title>Dashboard Vinted</title>
+<style>
+body{font-family:Arial;background:#0b0f17;color:#e8eefc;padding:20px}
+table{width:100%;border-collapse:collapse}
+th,td{padding:10px;border-bottom:1px solid #333}
+button{padding:8px 12px;font-weight:bold;border-radius:8px;border:0;cursor:pointer}
+.ok{background:#1fda85}
+input{padding:8px;border-radius:6px;border:1px solid #444;background:#111;color:#fff}
+</style>
+</head>
+<body>
+
+<h1>🧵 Articoli Script = Approvato</h1>
+
+<div>
+Percorso base (Render usa /tmp):<br/>
+<input id="path" value="/tmp/vinted" style="width:300px"/>
+</div>
+
+<table>
+<thead>
+<tr>
+<th>Codice</th>
+<th>Descrizione IT</th>
+<th>Azione</th>
+</tr>
+</thead>
+<tbody id="rows"></tbody>
+</table>
+
+<pre id="log"></pre>
+
 <script>
-function go(){
- const c=document.getElementById('c').value;
- fetch('/api/vinted/analyze?codice='+c)
- .then(r=>{
-   if(r.headers.get('content-type').includes('zip')) r.blob().then(b=>{
-     const a=document.createElement('a');
-     a.href=URL.createObjectURL(b);
-     a.download=c+'_VINTED.zip';a.click();
-   })
-   else r.json().then(j=>o.textContent=JSON.stringify(j,null,2));
- });
+async function load(){
+  const r = await fetch('/api/vinted/list');
+  const j = await r.json();
+  const tb = document.getElementById('rows');
+  tb.innerHTML = j.map(a=>\`
+    <tr>
+      <td><b>\${a.Codice}</b></td>
+      <td>\${a.Descrizione_IT}</td>
+      <td>
+        <button class="ok" onclick="ready('\${a.Codice}')">
+          PRONTO PER VINTED
+        </button>
+      </td>
+    </tr>
+  \`).join('');
 }
+
+async function ready(codice){
+  const basePath = document.getElementById('path').value;
+  const r = await fetch('/api/vinted/ready', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ codice, basePath })
+  });
+  const j = await r.json();
+  document.getElementById('log').textContent = JSON.stringify(j,null,2);
+}
+
+load();
 </script>
-</body></html>
-`);
+
+</body>
+</html>`);
+});
+
+/* =========================================================
+   API: LISTA SCRIPT = APPROVATO
+   ========================================================= */
+
+app.get('/api/vinted/list', async (req, res) => {
+  const rows = await readSheet();
+  const approved = rows.filter(r =>
+    r.Script.toLowerCase() === 'approvato'
+  );
+  res.json(approved);
+});
+
+/* =========================================================
+   API: PRONTO PER VINTED
+   ========================================================= */
+
+app.post('/api/vinted/ready', async (req, res) => {
+  const { codice, basePath } = req.body;
+  if (!codice || !basePath) {
+    return res.status(400).json({ ok:false, error:'Parametri mancanti' });
+  }
+
+  const rows = await readSheet();
+  const a = rows.find(r => r.Codice === codice);
+  if (!a) return res.status(404).json({ ok:false, error:'Articolo non trovato' });
+
+  const required = [
+    'Titolo','Descrizione_IT',
+    'Titolo_FR','Descrizione_FR',
+    'Titolo_ES','Descrizione_ES'
+  ];
+  for (const k of required) {
+    if (!a[k]) {
+      return res.status(400).json({ ok:false, error:`Campo mancante: ${k}` });
+    }
+  }
+
+  const dir = path.join(basePath, codice);
+  fs.mkdirSync(dir, { recursive: true });
+
+  const content = `
+CODICE: ${codice}
+
+=== ITALIANO ===
+Titolo: ${a.Titolo}
+Descrizione:
+${a.Descrizione_IT}
+
+=== FRANCESE ===
+Titre: ${a.Titolo_FR}
+Description:
+${a.Descrizione_FR}
+
+=== SPAGNOLO ===
+Título: ${a.Titolo_ES}
+Descripción:
+${a.Descrizione_ES}
+
+=== PREZZI ===
+Prezzo listino negozio: ${a.Prezzo_Negozio || 'n.d.'} €
+Prezzo listino online: ${a.Prezzo_Online || 'n.d.'} €
+`.trim();
+
+  fs.writeFileSync(path.join(dir, `${codice}.txt`), content, 'utf8');
+
+  res.json({ ok:true, status:'PRONTO PER VINTED', path: dir });
 });
 
 /* =========================================================
    START
    ========================================================= */
-app.listen(PORT,()=>console.log('🚀 SyncFED avviato'));
+
+app.listen(PORT, () => {
+  console.log('🚀 SyncFED avviato su porta', PORT);
+});
