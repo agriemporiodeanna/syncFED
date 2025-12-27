@@ -1,9 +1,9 @@
 /**
- * SyncFED – PRODUZIONE INTEGRATA DEFINITIVA (FIXED UPLOAD)
+ * SyncFED – PRODUZIONE INTEGRATA DEFINITIVA (FIXED 2025)
  * - Export DELTA (Bman -> Sheet) completo.
  * - Ottimizzazione Immagini: Forza .jpg e compressione < 300KB via 'sharp'.
- * - Upload da PC a DRIVE: Corretto errore part.body.pipe.
- * - Google Drive: Creazione automatica cartella "CODICE - TITOLO" e asset (Foto/TXT).
+ * - Fix caricamento: Gestione Buffer corretta (rimosso errore .pipe()).
+ * - Google Drive: Creazione automatica cartelle e salvataggio asset.
  */
 
 import "dotenv/config";
@@ -17,7 +17,7 @@ import sharp from "sharp";
 
 const app = express();
 app.use(cors());
-// Aumentato il limite per gestire molte foto in alta risoluzione contemporaneamente
+// Limite alzato a 100mb per gestire upload multipli di foto pesanti da PC
 app.use(express.json({ limit: "100mb" })); 
 
 const PORT = process.env.PORT || 10000;
@@ -42,13 +42,14 @@ function nowIso() { return new Date().toISOString(); }
 
 async function processAndCompressImage(buffer) {
   let quality = 80;
+  // Converte in JPG e ridimensiona max 1600px
   let optimizedBuffer = await sharp(buffer)
     .jpeg({ quality, progressive: true })
     .resize(1600, 1600, { fit: 'inside', withoutEnlargement: true })
     .toBuffer();
 
-  // Se supera i 300KB, riduce ulteriormente la qualità in modo aggressivo
-  while (optimizedBuffer.length > 300 * 1024 && quality > 10) {
+  // Ciclo di riduzione qualità se il file supera ancora i 300KB
+  while (optimizedBuffer.length > 300 * 1024 && quality > 15) {
     quality -= 10;
     optimizedBuffer = await sharp(buffer).jpeg({ quality, progressive: true }).toBuffer();
   }
@@ -111,18 +112,10 @@ async function ensureFolder(drive, folderName, parentId = null) {
    ROTTE API
    ========================================================= */
 
-app.get("/api/test/google-key", async (req, res) => {
-  try {
-    const { sheets, sheetId } = await getSheetsClient();
-    const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId });
-    res.json({ ok: true, message: "Connessione Google OK", title: meta.data.properties.title });
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-// 1. CARICAMENTO FOTO DA PC A GOOGLE DRIVE (FIXED PER BASE64)
+// 1. CARICAMENTO FOTO DA PC A DRIVE (CORRETTO)
 app.post("/api/vinted/upload-pc-to-drive", async (req, res) => {
     const { codice, images } = req.body; 
-    if (!images || images.length < 5) return res.status(400).json({ ok: false, error: "Servono 5 foto." });
+    if (!images || images.length < 5) return res.status(400).json({ ok: false, error: "Seleziona almeno 5 foto." });
     
     try {
         const { sheets, sheetId } = await getSheetsClient();
@@ -130,7 +123,7 @@ app.post("/api/vinted/upload-pc-to-drive", async (req, res) => {
         
         const respSheet = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${SHEET_TAB}!A1:Z10000` });
         const values = respSheet.data.values || [];
-        const header = values[0];
+        const header = values[0] || [];
         const row = values.slice(1).find(r => String(r[header.indexOf("Codice")]).trim() === codice);
         const titolo = row ? row[header.indexOf("Titolo")] : "Prodotto_Senza_Titolo";
 
@@ -138,8 +131,11 @@ app.post("/api/vinted/upload-pc-to-drive", async (req, res) => {
         const productFolderId = await ensureFolder(drive, `${codice} - ${titolo}`, rootId);
 
         for (let i = 0; i < images.length; i++) {
-            // Converte base64 in Buffer (gestione corretta dell'upload dal browser)
-            const buffer = Buffer.from(images[i].split(",")[1], "base64");
+            // Conversione da stringa base64 a Buffer binario
+            const base64Data = images[i].split(",")[1];
+            const buffer = Buffer.from(base64Data, "base64");
+            
+            // Compressione e ottimizzazione
             const optimized = await processAndCompressImage(buffer);
             
             await drive.files.create({ 
@@ -148,9 +144,9 @@ app.post("/api/vinted/upload-pc-to-drive", async (req, res) => {
                 fields: 'id'
             });
         }
-        res.json({ ok: true, message: "Foto caricate e ottimizzate su Google Drive!" });
+        res.json({ ok: true, message: "Foto caricate con successo!" });
     } catch (e) {
-        console.error("Errore Drive:", e.message);
+        console.error("Errore upload:", e.message);
         res.status(500).json({ ok: false, error: e.message });
     }
 });
@@ -215,6 +211,14 @@ app.get("/api/vinted/list-approvati", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.get("/api/test/google-key", async (req, res) => {
+  try {
+    const { sheets, sheetId } = await getSheetsClient();
+    const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId });
+    res.json({ ok: true, message: "Google OK", title: meta.data.properties.title });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 /* =========================================================
    UI
    ========================================================= */
@@ -239,10 +243,10 @@ app.get("/dashboard", (req, res) => {
     <script>
       let cur = "";
       async function load(){
-        document.getElementById('st').innerText = "⏳ Caricamento...";
+        document.getElementById('st').innerText = "⏳...";
         const r = await fetch('/api/vinted/list-approvati');
         const j = await r.json();
-        document.getElementById('st').innerText = "✅ Dati pronti";
+        document.getElementById('st').innerText = "✅";
         document.getElementById('tb').innerHTML = j.articoli.map(a => \`
           <tr>
             <td><b>\${a.codice}</b></td>
@@ -259,8 +263,7 @@ app.get("/dashboard", (req, res) => {
         if(files.length < 5) return alert("Seleziona almeno 5 foto.");
         
         const btn = document.querySelector(\`button[onclick="trig('\${cur}')"]\`);
-        const originalText = btn.innerText;
-        btn.innerText = "⏳ Caricamento..."; btn.disabled = true;
+        const oldText = btn.innerText; btn.innerText = "⏳ Caricamento..."; btn.disabled = true;
 
         const imgs = await Promise.all(files.map(f => new Promise(res => {
           const rd = new FileReader(); rd.onload = () => res(rd.result); rd.readAsDataURL(f);
@@ -271,8 +274,9 @@ app.get("/dashboard", (req, res) => {
           body: JSON.stringify({ codice: cur, images: imgs })
         });
         const result = await res.json();
-        btn.innerText = originalText; btn.disabled = false;
-        alert(result.ok ? "✅ Foto caricate su Google Drive!" : "❌ Errore: " + result.error);
+        btn.innerText = oldText; btn.disabled = false;
+        alert(result.ok ? "✅ Foto salvate su Drive!" : "❌ Errore: " + result.error);
+        if(result.ok) load();
       };
       load();
     </script></body></html>`);
@@ -281,7 +285,7 @@ app.get("/dashboard", (req, res) => {
 app.get("/", (req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.send(`<!doctype html><html><head><meta charset="utf-8"/><title>SyncFED</title>
-  <style>body{font-family:Arial;padding:40px;background:#0b0f17;color:#fff}.card{background:#111a2b;padding:30px;border-radius:15px;border:1px solid #26324d}button{padding:15px 25px;border-radius:10px;border:0;cursor:pointer;font-weight:bold;margin:10px}.primary{background:#4c7dff;color:#fff}.ok{background:#1fda85;color:#000}pre{background:#0b0f17;padding:20px;border:1px solid #26324d;margin-top:20px;border-radius:10px}</style></head>
+  <style>body{font-family:Arial;padding:40px;background:#0b0f17;color:#fff}.card{background:#111a2b;padding:30px;border-radius:15px;border:1px solid #26324d}button{padding:15px 25px;border-radius:10px;border:0;cursor:pointer;font-weight:bold;margin:10px}.primary{background:#4c7dff;color:#fff}.ok{background:#1fda85;color:#000}</style></head>
   <body><div class="card"><h1>🚀 SyncFED Controllo Operativo</h1>
     <button class="primary" onclick="call('/api/step3/export-delta')">1. Export DELTA</button>
     <button class="ok" onclick="window.location.href='/dashboard'">2. Vai alla Dashboard</button>
