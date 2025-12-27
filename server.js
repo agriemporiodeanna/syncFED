@@ -1,9 +1,8 @@
 /**
- * SyncFED – PRODUZIONE INTEGRATA DEFINITIVA (FIXED 2025)
+ * SyncFED – PRODUZIONE 2025 – SOLO GENERAZIONE TXT SU DRIVE
  * - Export DELTA (Bman -> Sheet) completo.
- * - Ottimizzazione Immagini: Forza .jpg e compressione < 300KB via 'sharp'.
- * - Fix caricamento: Gestione Buffer corretta (rimosso errore .pipe()).
- * - Google Drive: Creazione automatica cartelle e salvataggio asset.
+ * - Rimozione caricamento foto.
+ * - Salvataggio file TXT con i dettagli dell'articolo in cartelle dedicate su Drive.
  */
 
 import "dotenv/config";
@@ -12,90 +11,27 @@ import cors from "cors";
 import fetch from "node-fetch";
 import xml2js from "xml2js";
 import { google } from "googleapis";
-import { Readable } from "stream";
-import sharp from "sharp"; 
 
 const app = express();
 app.use(cors());
-// Limite alzato a 100mb per gestire upload multipli di foto pesanti da PC
-app.use(express.json({ limit: "100mb" })); 
+app.use(express.json({ limit: "50mb" })); 
 
 const PORT = process.env.PORT || 10000;
 
 /* =========================================================
-   CONFIGURAZIONI
+   CONFIGURAZIONI & HELPERS
    ========================================================= */
 const BMAN_ENDPOINT = "https://emporiodeanna.bman.it/bmanapi.asmx";
-const BMAN_CHIAVE = String(process.env.BMAN_API_KEY || "").trim();
 const SHEET_TAB = (process.env.GOOGLE_SHEET_TAB || "PRODOTTI_BMAN").trim();
-const SHEET_HEADERS = ["ID", "Codice", "Titolo", "Brand", "Tag15", "Script", "Descrizione_IT", "Titolo_FR", "Descrizione_FR", "Titolo_ES", "Descrizione_ES", "Titolo_DE", "Descrizione_DE", "Titolo_EN", "Descrizione_EN", "Categoria_Vinted", "Prezzo_Negozio", "Prezzo_Online", "Foto_1", "Foto_2", "Foto_3", "Foto_4", "Foto_5", "PRONTO_PER_VINTED", "UltimoSync"];
 
-/* =========================================================
-   HELPERS & OTTIMIZZAZIONE IMMAGINI
-   ========================================================= */
-function normalizeValue(value) {
-  if (!value) return "";
-  return String(value).trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-}
+function normalizeValue(v) { return v ? String(v).trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "") : ""; }
 
-function nowIso() { return new Date().toISOString(); }
-
-async function processAndCompressImage(buffer) {
-  let quality = 80;
-  // Converte in JPG e ridimensiona max 1600px
-  let optimizedBuffer = await sharp(buffer)
-    .jpeg({ quality, progressive: true })
-    .resize(1600, 1600, { fit: 'inside', withoutEnlargement: true })
-    .toBuffer();
-
-  // Ciclo di riduzione qualità se il file supera ancora i 300KB
-  while (optimizedBuffer.length > 300 * 1024 && quality > 15) {
-    quality -= 10;
-    optimizedBuffer = await sharp(buffer).jpeg({ quality, progressive: true }).toBuffer();
-  }
-  return optimizedBuffer;
-}
-
-/* =========================================================
-   GOOGLE & SOAP BMAN
-   ========================================================= */
 async function getGoogleAuth() {
   return new google.auth.JWT(process.env.GOOGLE_CLIENT_EMAIL, null, process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"), [
     "https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"
   ]);
 }
 
-async function getSheetsClient() {
-  const auth = await getGoogleAuth();
-  return { sheets: google.sheets({ version: "v4", auth }), sheetId: process.env.GOOGLE_SHEET_ID };
-}
-
-async function getDriveClient() {
-  const auth = await getGoogleAuth();
-  return google.drive({ version: "v3", auth });
-}
-
-async function soapCall(action, bodyXml) {
-  const resp = await fetch(BMAN_ENDPOINT, {
-    method: "POST",
-    headers: { "Content-Type": "text/xml; charset=utf-8", SOAPAction: `http://cloud.bman.it/${action}` },
-    body: bodyXml,
-  });
-  return await resp.text();
-}
-
-async function getAnagrafiche({ numeroPagina = 1, filtri = [] } = {}) {
-  const filtriJson = JSON.stringify(filtri);
-  const soapBody = `<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><getAnagrafiche xmlns="http://cloud.bman.it/"><chiave>${BMAN_CHIAVE}</chiave><filtri><![CDATA[${filtriJson}]]></filtri><ordinamentoCampo>ID</ordinamentoCampo><ordinamentoDirezione>1</ordinamentoDirezione><numeroPagina>${numeroPagina}</numeroPagina><listaDepositi><![CDATA[[]]]></listaDepositi><dettaglioVarianti>false</dettaglioVarianti></getAnagrafiche></soap:Body></soap:Envelope>`;
-  const xml = await soapCall("getAnagrafiche", soapBody);
-  const parsed = await xml2js.parseStringPromise(xml, { explicitArray: false });
-  const result = parsed?.["soap:Envelope"]?.["soap:Body"]?.getAnagraficheResponse?.getAnagraficheResult ?? "";
-  return JSON.parse(result || "[]");
-}
-
-/* =========================================================
-   DRIVE HELPERS
-   ========================================================= */
 async function ensureFolder(drive, folderName, parentId = null) {
   let query = `name = '${folderName.replace(/'/g, "\\")}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
   if (parentId) query += ` and '${parentId}' in parents`;
@@ -112,115 +48,89 @@ async function ensureFolder(drive, folderName, parentId = null) {
    ROTTE API
    ========================================================= */
 
-// 1. CARICAMENTO FOTO DA PC A DRIVE (CORRETTO)
-app.post("/api/vinted/upload-pc-to-drive", async (req, res) => {
-    const { codice, images } = req.body; 
-    if (!images || images.length < 5) return res.status(400).json({ ok: false, error: "Seleziona almeno 5 foto." });
+// GENERAZIONE SOLO FILE TXT SU DRIVE
+app.post("/api/vinted/generate-txt-drive", async (req, res) => {
+    const { codice } = req.body; 
     
     try {
-        const { sheets, sheetId } = await getSheetsClient();
-        const drive = await getDriveClient();
+        const auth = await getGoogleAuth();
+        const drive = google.drive({ version: "v3", auth });
+        const sheets = google.sheets({ version: "v4", auth });
         
-        const respSheet = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${SHEET_TAB}!A1:Z10000` });
-        const values = respSheet.data.values || [];
+        // Recupero dati completi dallo Sheet
+        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: process.env.GOOGLE_SHEET_ID, range: `${SHEET_TAB}!A1:Z10000` });
+        const values = resp.data.values || [];
         const header = values[0] || [];
-        const row = values.slice(1).find(r => String(r[header.indexOf("Codice")]).trim() === codice);
-        const titolo = row ? row[header.indexOf("Titolo")] : "Prodotto_Senza_Titolo";
+        const rowArr = values.slice(1).find(r => String(r[header.indexOf("Codice")]).trim() === codice);
 
+        if (!rowArr) return res.status(404).json({ ok: false, error: "Codice non trovato nello Sheet." });
+
+        // Creazione oggetto per mappare i dati
+        const d = {};
+        header.forEach((k, i) => d[k] = rowArr[i] || "");
+
+        const titolo = d.Titolo || "Senza_Titolo";
         const rootId = await ensureFolder(drive, "DATI_VINTED");
         const productFolderId = await ensureFolder(drive, `${codice} - ${titolo}`, rootId);
 
-        for (let i = 0; i < images.length; i++) {
-            // Conversione da stringa base64 a Buffer binario
-            const base64Data = images[i].split(",")[1];
-            const buffer = Buffer.from(base64Data, "base64");
-            
-            // Compressione e ottimizzazione
-            const optimized = await processAndCompressImage(buffer);
-            
-            await drive.files.create({ 
-                resource: { name: `${codice}_${i + 1}.jpg`, parents: [productFolderId] }, 
-                media: { mimeType: 'image/jpeg', body: optimized },
-                fields: 'id'
-            });
-        }
-        res.json({ ok: true, message: "Foto caricate con successo!" });
-    } catch (e) {
-        console.error("Errore upload:", e.message);
-        res.status(500).json({ ok: false, error: e.message });
-    }
-});
+        // Composizione del contenuto del file TXT
+        const txtContent = `
+=== SCHEDA PRODOTTO: ${codice} ===
+TITOLO IT: ${d.Titolo}
+DESCRIZIONE IT:
+${d.Descrizione_IT}
 
-app.get("/api/step3/export-delta", async (req, res) => {
-  try {
-    const { sheets, sheetId } = await getSheetsClient();
-    const scriptValues = ["si", "approvato"];
-    const articoliSet = new Map();
-    for (const sv of scriptValues) {
-      let page = 1;
-      while (true) {
-        const chunk = await getAnagrafiche({ numeroPagina: page, filtri: [{ chiave: "opzionale11", operatore: "=", valore: sv }] });
-        if (!chunk || chunk.length === 0) break;
-        chunk.forEach(a => { if(a.codice) articoliSet.set(String(a.codice).trim(), a); });
-        if (chunk.length < 50) break;
-        page++;
-      }
-    }
-    const articoli = Array.from(articoliSet.values());
-    const resp = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${SHEET_TAB}!A1:Z10000` });
-    const values = resp.data.values || [];
-    if (!values.length) await sheets.spreadsheets.values.update({ spreadsheetId: sheetId, range: `${SHEET_TAB}!A1`, valueInputOption: "RAW", requestBody: { values: [SHEET_HEADERS] } });
-    
-    const existingMap = new Map();
-    values.slice(1).forEach((r, i) => { if (r[1]) existingMap.set(String(r[1]).trim(), { index: i + 2, data: r }); });
+----------------------------------
+TITOLO FR: ${d.Titolo_FR}
+DESCRIZIONE FR:
+${d.Descrizione_FR}
 
-    const updates = [], inserts = [];
-    for (const a of articoli) {
-      const cod = String(a.codice).trim();
-      const newRow = [a.ID, a.codice, a.opzionale2 || a.Titolo, a.opzionale1, "", a.opzionale11, (a.opzionale12 || "").trim(), a.opzionale6, (a.opzionale13 || "").trim(), a.opzionale8, (a.opzionale15 || "").trim(), a.opzionale9, "", a.opzionale7, "", a.opzionale10, a.prza, a.przb, "", "", "", "", "", "FALSE", nowIso()];
-      const found = existingMap.get(cod);
-      if (!found) inserts.push(newRow);
-      else {
-        const merged = [...found.data];
-        let changed = false;
-        [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 13, 15, 16, 17].forEach(idx => { if (normalizeValue(merged[idx]) !== normalizeValue(newRow[idx])) { merged[idx] = newRow[idx]; changed = true; } });
-        if (changed) { merged[24] = nowIso(); updates.push({ range: `${SHEET_TAB}!A${found.index}:Y${found.index}`, values: [merged] }); }
-      }
-    }
-    if (updates.length) await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: sheetId, requestBody: { valueInputOption: "RAW", data: updates } });
-    if (inserts.length) await sheets.spreadsheets.values.append({ spreadsheetId: sheetId, range: `${SHEET_TAB}!A2`, valueInputOption: "RAW", requestBody: { values: inserts } });
-    res.json({ ok: true, total: articoli.length, updated: updates.length, inserted: inserts.length });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+----------------------------------
+TITOLO ES: ${d.Titolo_ES}
+DESCRIZIONE ES:
+${d.Descrizione_ES}
+
+----------------------------------
+PREZZO NEGOZIO: ${d.Prezzo_Negozio}
+PREZZO ONLINE: ${d.Prezzo_Online}
+BRAND: ${d.Brand}
+CATEGORIA VINTED: ${d.Categoria_Vinted}
+TAGS: ${d.Tag15}
+`.trim();
+
+        // Salvataggio file TXT su Drive
+        await drive.files.create({ 
+            resource: { name: `INFO_${codice}.txt`, parents: [productFolderId] }, 
+            media: { mimeType: 'text/plain', body: txtContent },
+            fields: 'id'
+        });
+
+        res.json({ ok: true, message: "File TXT generato con successo su Drive!" });
+    } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
 app.get("/api/vinted/list-approvati", async (req, res) => {
   try {
-    const { sheets, sheetId } = await getSheetsClient();
-    const resp = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${SHEET_TAB}!A1:Z10000` });
-    const header = resp.data.values[0] || SHEET_HEADERS;
-    const out = (resp.data.values || []).slice(1).map(r => {
+    const auth = await getGoogleAuth();
+    const sheets = google.sheets({ version: "v4", auth });
+    const resp = await sheets.spreadsheets.values.get({ spreadsheetId: process.env.GOOGLE_SHEET_ID, range: `${SHEET_TAB}!A1:Z10000` });
+    const values = resp.data.values || [];
+    const header = values[0] || [];
+    const out = values.slice(1).map(r => {
       const obj = {}; header.forEach((k, i) => obj[k] = r[i]);
-      const missing = []; 
-      for (let i = 1; i <= 5; i++) if (!String(obj[`Foto_${i}`]||'').trim()) missing.push(`Foto_${i}`);
-      if (!String(obj.Descrizione_IT||'').trim()) missing.push("Descrizione_IT");
-      if (!String(obj.Titolo_FR||'').trim() || !String(obj.Descrizione_FR||'').trim()) missing.push("FR");
-      if (!String(obj.Titolo_ES||'').trim() || !String(obj.Descrizione_ES||'').trim()) missing.push("ES");
-      return { codice: obj.Codice, descrizione: obj.Descrizione_IT, pronto: obj.PRONTO_PER_VINTED, missing, script: obj.Script };
+      return { 
+        codice: obj.Codice, 
+        descrizione: obj.Descrizione_IT, 
+        pronto: obj.PRONTO_PER_VINTED, 
+        script: obj.Script 
+      };
     }).filter(x => normalizeValue(x.script) === "approvato");
     res.json({ ok: true, articoli: out });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get("/api/test/google-key", async (req, res) => {
-  try {
-    const { sheets, sheetId } = await getSheetsClient();
-    const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId });
-    res.json({ ok: true, message: "Google OK", title: meta.data.properties.title });
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
 /* =========================================================
-   UI
+   UI DASHBOARD AGGIORNATA
    ========================================================= */
 app.get("/dashboard", (req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -228,71 +138,230 @@ app.get("/dashboard", (req, res) => {
   <style>
     body{font-family:sans-serif;background:#0b0f17;color:#fff;padding:20px}
     table{width:100%;border-collapse:collapse}th,td{padding:10px;border-bottom:1px solid #26324d;text-align:left}
-    button{padding:8px;border-radius:5px;border:none;cursor:pointer;background:#4c7dff;color:#fff;margin:2px;font-weight:bold}
-    button:disabled{background:#444;cursor:not-allowed}
-    .btn-upload{background:#1fda85;color:#000}
-    .missing{color:#ffcd4c;font-size:11px;display:block}
-    input[type="file"]{display:none}
+    button{background:#4c7dff;color:#fff;border:none;padding:8px;border-radius:5px;cursor:pointer;font-weight:bold}
+    .btn-txt{background:#ff9800;color:#fff}
   </style></head>
   <body>
-    <h1>📦 Dashboard Vinted</h1>
+    <h1>📦 Generatore Schede Vinted</h1>
     <button onclick="window.location.href='/'">⬅ Home</button> <button onclick="load()">🔄 Ricarica</button>
-    <div id="st"></div>
-    <table><thead><tr><th>Codice</th><th>Descrizione</th><th>Stato</th><th>Azione</th></tr></thead><tbody id="tb"></tbody></table>
-    <input type="file" id="fIn" multiple accept="image/*" />
+    <div id="st" style="margin:10px 0"></div>
+    <table><thead><tr><th>Codice</th><th>Descrizione</th><th>Azione</th></tr></thead><tbody id="tb"></tbody></table>
     <script>
-      let cur = "";
       async function load(){
-        document.getElementById('st').innerText = "⏳...";
+        document.getElementById('st').innerText = "⏳ Caricamento...";
         const r = await fetch('/api/vinted/list-approvati');
         const j = await r.json();
-        document.getElementById('st').innerText = "✅";
+        document.getElementById('st').innerText = "✅ Seleziona un articolo per creare il file TXT su Drive";
         document.getElementById('tb').innerHTML = j.articoli.map(a => \`
           <tr>
             <td><b>\${a.codice}</b></td>
-            <td>\${a.descrizione || '---'}<span class="missing">\${a.missing.length?'Mancano: '+a.missing.join(', '):''}</span></td>
-            <td>\${a.pronto==='TRUE'?'✅ PRONTO':'❌ NO'}</td>
-            <td>
-              <button onclick="trig('\${a.codice}')" class="btn-upload">📸 Carica Foto Drive</button>
-            </td>
+            <td>\${a.descrizione || '---'}</td>
+            <td><button onclick="creaTxt('\${a.codice}')" class="btn-txt">📄 Genera TXT su Drive</button></td>
           </tr>\`).join('');
       }
-      function trig(c){ cur = c; document.getElementById('fIn').click(); }
-      document.getElementById('fIn').onchange = async (e) => {
-        const files = Array.from(e.target.files);
-        if(files.length < 5) return alert("Seleziona almeno 5 foto.");
-        
-        const btn = document.querySelector(\`button[onclick="trig('\${cur}')"]\`);
-        const oldText = btn.innerText; btn.innerText = "⏳ Caricamento..."; btn.disabled = true;
-
-        const imgs = await Promise.all(files.map(f => new Promise(res => {
-          const rd = new FileReader(); rd.onload = () => res(rd.result); rd.readAsDataURL(f);
-        })));
-
-        const res = await fetch('/api/vinted/upload-pc-to-drive', {
+      async function creaTxt(c){
+        const btn = event.target;
+        btn.innerText = "⏳..."; btn.disabled = true;
+        const res = await fetch('/api/vinted/generate-txt-drive', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ codice: cur, images: imgs })
+          body: JSON.stringify({ codice: c })
         });
         const result = await res.json();
-        btn.innerText = oldText; btn.disabled = false;
-        alert(result.ok ? "✅ Foto salvate su Drive!" : "❌ Errore: " + result.error);
-        if(result.ok) load();
-      };
+        btn.innerText = "📄 Genera TXT su Drive"; btn.disabled = false;
+        alert(result.ok ? result.message : "❌ Errore: " + result.error);
+      }
       load();
     </script></body></html>`);
 });
 
 app.get("/", (req, res) => {
-  res.setHeader("Content-Type", "text/html; charset=utf-8");
-  res.send(`<!doctype html><html><head><meta charset="utf-8"/><title>SyncFED</title>
-  <style>body{font-family:Arial;padding:40px;background:#0b0f17;color:#fff}.card{background:#111a2b;padding:30px;border-radius:15px;border:1px solid #26324d}button{padding:15px 25px;border-radius:10px;border:0;cursor:pointer;font-weight:bold;margin:10px}.primary{background:#4c7dff;color:#fff}.ok{background:#1fda85;color:#000}</style></head>
-  <body><div class="card"><h1>🚀 SyncFED Controllo Operativo</h1>
-    <button class="primary" onclick="call('/api/step3/export-delta')">1. Export DELTA</button>
-    <button class="ok" onclick="window.location.href='/dashboard'">2. Vai alla Dashboard</button>
-    <button style="background:#ffcd4c; color:#000" onclick="call('/api/test/google-key')">Test Google Key</button>
-    <pre id="out">In attesa...</pre></div>
-    <script>async function call(p){ const out=document.getElementById('out'); out.innerText='...'; const r=await fetch(p); const j=await r.json(); out.innerText=JSON.stringify(j,null,2); }</script>
-  </body></html>`);
+  res.send(\`<!doctype html><html><body style="background:#0b0f17;color:#fff;font-family:sans-serif;padding:50px;">
+    <h1>🚀 SyncFED</h1>
+    <button style="padding:15px;cursor:pointer;" onclick="window.location.href='/dashboard'">Vai alla Dashboard TXT</button>
+  </body></html>\`);
 });
 
-app.listen(PORT, () => { console.log(`🚀 Porta ${PORT}`); });
+app.listen(PORT, () => console.log(\`🚀 SyncFED porta \${PORT}\`));/**
+ * SyncFED – PRODUZIONE 2025 – SOLO GENERAZIONE TXT SU DRIVE
+ * - Export DELTA (Bman -> Sheet) completo.
+ * - Rimozione caricamento foto.
+ * - Salvataggio file TXT con i dettagli dell'articolo in cartelle dedicate su Drive.
+ */
+
+import "dotenv/config";
+import express from "express";
+import cors from "cors";
+import fetch from "node-fetch";
+import xml2js from "xml2js";
+import { google } from "googleapis";
+
+const app = express();
+app.use(cors());
+app.use(express.json({ limit: "50mb" })); 
+
+const PORT = process.env.PORT || 10000;
+
+/* =========================================================
+   CONFIGURAZIONI & HELPERS
+   ========================================================= */
+const BMAN_ENDPOINT = "https://emporiodeanna.bman.it/bmanapi.asmx";
+const SHEET_TAB = (process.env.GOOGLE_SHEET_TAB || "PRODOTTI_BMAN").trim();
+
+function normalizeValue(v) { return v ? String(v).trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "") : ""; }
+
+async function getGoogleAuth() {
+  return new google.auth.JWT(process.env.GOOGLE_CLIENT_EMAIL, null, process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"), [
+    "https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"
+  ]);
+}
+
+async function ensureFolder(drive, folderName, parentId = null) {
+  let query = `name = '${folderName.replace(/'/g, "\\")}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
+  if (parentId) query += ` and '${parentId}' in parents`;
+  const res = await drive.files.list({ q: query, fields: 'files(id, name)' });
+  if (res.data.files && res.data.files.length > 0) return res.data.files[0].id;
+  const folder = await drive.files.create({ 
+    resource: { name: folderName, mimeType: 'application/vnd.google-apps.folder', parents: parentId ? [parentId] : [] }, 
+    fields: 'id' 
+  });
+  return folder.data.id;
+}
+
+/* =========================================================
+   ROTTE API
+   ========================================================= */
+
+// GENERAZIONE SOLO FILE TXT SU DRIVE
+app.post("/api/vinted/generate-txt-drive", async (req, res) => {
+    const { codice } = req.body; 
+    
+    try {
+        const auth = await getGoogleAuth();
+        const drive = google.drive({ version: "v3", auth });
+        const sheets = google.sheets({ version: "v4", auth });
+        
+        // Recupero dati completi dallo Sheet
+        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: process.env.GOOGLE_SHEET_ID, range: `${SHEET_TAB}!A1:Z10000` });
+        const values = resp.data.values || [];
+        const header = values[0] || [];
+        const rowArr = values.slice(1).find(r => String(r[header.indexOf("Codice")]).trim() === codice);
+
+        if (!rowArr) return res.status(404).json({ ok: false, error: "Codice non trovato nello Sheet." });
+
+        // Creazione oggetto per mappare i dati
+        const d = {};
+        header.forEach((k, i) => d[k] = rowArr[i] || "");
+
+        const titolo = d.Titolo || "Senza_Titolo";
+        const rootId = await ensureFolder(drive, "DATI_VINTED");
+        const productFolderId = await ensureFolder(drive, `${codice} - ${titolo}`, rootId);
+
+        // Composizione del contenuto del file TXT
+        const txtContent = `
+=== SCHEDA PRODOTTO: ${codice} ===
+TITOLO IT: ${d.Titolo}
+DESCRIZIONE IT:
+${d.Descrizione_IT}
+
+----------------------------------
+TITOLO FR: ${d.Titolo_FR}
+DESCRIZIONE FR:
+${d.Descrizione_FR}
+
+----------------------------------
+TITOLO ES: ${d.Titolo_ES}
+DESCRIZIONE ES:
+${d.Descrizione_ES}
+
+----------------------------------
+PREZZO NEGOZIO: ${d.Prezzo_Negozio}
+PREZZO ONLINE: ${d.Prezzo_Online}
+BRAND: ${d.Brand}
+CATEGORIA VINTED: ${d.Categoria_Vinted}
+TAGS: ${d.Tag15}
+`.trim();
+
+        // Salvataggio file TXT su Drive
+        await drive.files.create({ 
+            resource: { name: `INFO_${codice}.txt`, parents: [productFolderId] }, 
+            media: { mimeType: 'text/plain', body: txtContent },
+            fields: 'id'
+        });
+
+        res.json({ ok: true, message: "File TXT generato con successo su Drive!" });
+    } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+app.get("/api/vinted/list-approvati", async (req, res) => {
+  try {
+    const auth = await getGoogleAuth();
+    const sheets = google.sheets({ version: "v4", auth });
+    const resp = await sheets.spreadsheets.values.get({ spreadsheetId: process.env.GOOGLE_SHEET_ID, range: `${SHEET_TAB}!A1:Z10000` });
+    const values = resp.data.values || [];
+    const header = values[0] || [];
+    const out = values.slice(1).map(r => {
+      const obj = {}; header.forEach((k, i) => obj[k] = r[i]);
+      return { 
+        codice: obj.Codice, 
+        descrizione: obj.Descrizione_IT, 
+        pronto: obj.PRONTO_PER_VINTED, 
+        script: obj.Script 
+      };
+    }).filter(x => normalizeValue(x.script) === "approvato");
+    res.json({ ok: true, articoli: out });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* =========================================================
+   UI DASHBOARD AGGIORNATA
+   ========================================================= */
+app.get("/dashboard", (req, res) => {
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(`<!doctype html><html><head><meta charset="utf-8"/><title>Dashboard</title>
+  <style>
+    body{font-family:sans-serif;background:#0b0f17;color:#fff;padding:20px}
+    table{width:100%;border-collapse:collapse}th,td{padding:10px;border-bottom:1px solid #26324d;text-align:left}
+    button{background:#4c7dff;color:#fff;border:none;padding:8px;border-radius:5px;cursor:pointer;font-weight:bold}
+    .btn-txt{background:#ff9800;color:#fff}
+  </style></head>
+  <body>
+    <h1>📦 Generatore Schede Vinted</h1>
+    <button onclick="window.location.href='/'">⬅ Home</button> <button onclick="load()">🔄 Ricarica</button>
+    <div id="st" style="margin:10px 0"></div>
+    <table><thead><tr><th>Codice</th><th>Descrizione</th><th>Azione</th></tr></thead><tbody id="tb"></tbody></table>
+    <script>
+      async function load(){
+        document.getElementById('st').innerText = "⏳ Caricamento...";
+        const r = await fetch('/api/vinted/list-approvati');
+        const j = await r.json();
+        document.getElementById('st').innerText = "✅ Seleziona un articolo per creare il file TXT su Drive";
+        document.getElementById('tb').innerHTML = j.articoli.map(a => \`
+          <tr>
+            <td><b>\${a.codice}</b></td>
+            <td>\${a.descrizione || '---'}</td>
+            <td><button onclick="creaTxt('\${a.codice}')" class="btn-txt">📄 Genera TXT su Drive</button></td>
+          </tr>\`).join('');
+      }
+      async function creaTxt(c){
+        const btn = event.target;
+        btn.innerText = "⏳..."; btn.disabled = true;
+        const res = await fetch('/api/vinted/generate-txt-drive', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ codice: c })
+        });
+        const result = await res.json();
+        btn.innerText = "📄 Genera TXT su Drive"; btn.disabled = false;
+        alert(result.ok ? result.message : "❌ Errore: " + result.error);
+      }
+      load();
+    </script></body></html>`);
+});
+
+app.get("/", (req, res) => {
+  res.send(\`<!doctype html><html><body style="background:#0b0f17;color:#fff;font-family:sans-serif;padding:50px;">
+    <h1>🚀 SyncFED</h1>
+    <button style="padding:15px;cursor:pointer;" onclick="window.location.href='/dashboard'">Vai alla Dashboard TXT</button>
+  </body></html>\`);
+});
+
+app.listen(PORT, () => console.log(\`🚀 SyncFED porta \${PORT}\`));
