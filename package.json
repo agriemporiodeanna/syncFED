@@ -9,6 +9,7 @@
     "start": "node server.js"
   },
   "dependencies": {
+    "sharp": "^0.32.6",
     "archiver": "^6.0.2",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
