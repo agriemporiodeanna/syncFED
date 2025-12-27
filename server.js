@@ -1,12 +1,11 @@
 /**
  * SyncFED – Node 16 (Render) – PRODUZIONE INTEGRATA
- * * MODIFICHE RECENTI:
- * - Esportazione Foto 1..5 Obbligatoria.
- * - Descrizioni FR ed ES Obbligatorie.
- * - Dashboard: Campi mancanti visibili inline.
+ * * LOG MODIFICHE:
+ * - File completo (Richiesta utente memorizzata).
+ * - Ripristinata logica Delta completa (Update vs Insert) basata su Codice.
+ * - Protezione Header rigorosa con errore descrittivo.
  * - Google Drive: Creazione cartella "DATI_VINTED / CODICE - TITOLO".
- * - Foto Drive: Caricamento automatico delle 5 foto nella cartella Drive.
- * - TXT Drive: Caricamento del file TXT direttamente su Drive (niente download locale).
+ * - Asset Drive: Caricamento automatico di 5 foto e file TXT (niente download locale).
  */
 
 import "dotenv/config";
@@ -191,7 +190,7 @@ async function uploadTextToDrive(drive, text, fileName, folderId) {
 }
 
 /* =========================================================
-   BUSINESS RULES & EXPORT
+   BUSINESS RULES & EXPORT DELTA
    ========================================================= */
 const SHEET_TAB = (process.env.GOOGLE_SHEET_TAB || "PRODOTTI_BMAN").trim();
 const SHEET_HEADERS = ["ID", "Codice", "Titolo", "Brand", "Tag15", "Script", "Descrizione_IT", "Titolo_FR", "Descrizione_FR", "Titolo_ES", "Descrizione_ES", "Titolo_DE", "Descrizione_DE", "Titolo_EN", "Descrizione_EN", "Categoria_Vinted", "Prezzo_Negozio", "Prezzo_Online", "Foto_1", "Foto_2", "Foto_3", "Foto_4", "Foto_5", "PRONTO_PER_VINTED", "UltimoSync"];
@@ -209,12 +208,24 @@ function getMissingFields(rowObj) {
   return missing;
 }
 
+function calcProntoPerVintedFromRowObj(rowObj) {
+  const scriptOk = normalizeValue(rowObj.Script) === "approvato";
+  const missing = getMissingFields(rowObj);
+  return scriptOk && missing.length === 0;
+}
+
 function idxOf(header, colName) { return header.findIndex((h) => String(h).trim() === colName); }
 
 function rowToObj(header, row) {
   const obj = {};
   header.forEach((k, i) => { if (k) obj[String(k).trim()] = String(row?.[i] ?? "").trim(); });
   return obj;
+}
+
+function colToA1(colIndex0) {
+  let n = colIndex0 + 1, s = "";
+  while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
+  return s;
 }
 
 /* =========================================================
@@ -228,13 +239,77 @@ app.get("/api/test/google-key", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
+app.get("/api/step3/export-delta", async (req, res) => {
+  try {
+    const { sheets, sheetId } = await getSheetsClient();
+    const articoli = await getAllArticlesByScriptValues(["si", "approvato"]);
+    
+    const endCol = colToA1(SHEET_HEADERS.length - 1);
+    const resp = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${SHEET_TAB}!A1:${endCol}10000` });
+    const values = resp.data.values || [];
+    const existingHeader = values[0] || [];
+
+    // Protezione Header
+    if (existingHeader.length > 0) {
+       const match = SHEET_HEADERS.every((h, i) => normalizeValue(h) === normalizeValue(existingHeader[i]));
+       if (!match) return res.status(400).json({ ok: false, error: "🔒 Export bloccato: lo Sheet NON è sincronizzato (header diverso)." });
+    } else {
+       await sheets.spreadsheets.values.update({ spreadsheetId: sheetId, range: `${SHEET_TAB}!A1`, valueInputOption: "RAW", requestBody: { values: [SHEET_HEADERS] } });
+    }
+
+    const iCod = SHEET_HEADERS.indexOf("Codice");
+    const existingRows = values.slice(1);
+    const existingMap = new Map();
+    existingRows.forEach((r, i) => { if (r[iCod]) existingMap.set(String(r[iCod]).trim(), { index: i + 2, data: r }); });
+
+    const updates = [], inserts = [];
+    let updated = 0, inserted = 0;
+
+    for (const a of articoli) {
+      const cod = String(a.codice).trim();
+      const found = existingMap.get(cod);
+      const newRow = [
+        a.ID, a.codice, a.opzionale2 || a.Titolo, a.opzionale1, "", a.opzionale11, (a.opzionale12 || "").trim(),
+        a.opzionale6, "", a.opzionale8, "", a.opzionale9, "", a.opzionale7, "", a.opzionale10, a.prza, a.przb,
+        "", "", "", "", "", "FALSE", nowIso()
+      ];
+
+      if (!found) {
+        inserts.push(newRow); inserted++;
+      } else {
+        const merged = [...found.data];
+        let changed = false;
+        // Colonne da sincronizzare forzatamente da Bman
+        [0, 1, 2, 3, 5, 6, 7, 9, 11, 13, 15, 16, 17].forEach(idx => {
+          if (normalizeValue(merged[idx]) !== normalizeValue(newRow[idx])) { merged[idx] = newRow[idx]; changed = true; }
+        });
+        
+        const objForPronto = rowToObj(SHEET_HEADERS, merged);
+        const pronto = calcProntoPerVintedFromRowObj(objForPronto) ? "TRUE" : "FALSE";
+        if (merged[23] !== pronto) { merged[23] = pronto; changed = true; }
+
+        if (changed) {
+          merged[24] = nowIso();
+          updates.push({ range: `${SHEET_TAB}!A${found.index}:${endCol}${found.index}`, values: [merged] });
+          updated++;
+        }
+      }
+    }
+
+    if (updates.length) await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: sheetId, requestBody: { valueInputOption: "RAW", data: updates } });
+    if (inserts.length) await sheets.spreadsheets.values.append({ spreadsheetId: sheetId, range: `${SHEET_TAB}!A2`, valueInputOption: "RAW", requestBody: { values: inserts } });
+
+    res.json({ ok: true, total: articoli.length, updated, inserted });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.get("/api/vinted/upload-to-drive", async (req, res) => {
   try {
     const codice = String(req.query.codice || "").trim();
     const { sheets, sheetId } = await getSheetsClient();
     const drive = await getDriveClient();
     
-    const resp = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${SHEET_TAB}!A1:Z1000` });
+    const resp = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${SHEET_TAB}!A1:Z10000` });
     const values = resp.data.values || [];
     const header = values[0];
     const row = values.slice(1).find(r => String(r[idxOf(header, "Codice")]).trim() === codice);
@@ -244,29 +319,26 @@ app.get("/api/vinted/upload-to-drive", async (req, res) => {
     const missing = getMissingFields(obj);
     if (missing.length) return res.status(400).json({ ok: false, missing });
 
-    // 1. Assicura Cartella Principale e Sottocartella
     const rootId = await ensureFolder(drive, "DATI_VINTED");
     const productFolderName = `${obj.Codice} - ${obj.Titolo}`;
     const productFolderId = await ensureFolder(drive, productFolderName, rootId);
 
-    // 2. Carica Foto su Drive
     for (let i = 1; i <= 5; i++) {
       const url = obj[`Foto_${i}`];
       await uploadUrlToDrive(drive, url, `Foto_${i}.jpg`, productFolderId);
     }
 
-    // 3. Carica TXT su Drive
     const txtContent = `CODICE: ${codice}\n\n=== IT ===\n${obj.Titolo}\n${obj.Descrizione_IT}\n\n=== FR ===\n${obj.Titolo_FR}\n${obj.Descrizione_FR}\n\n=== ES ===\n${obj.Titolo_ES}\n${obj.Descrizione_ES}\n\nPREZZO ONLINE: ${obj.Prezzo_Online}`;
     await uploadTextToDrive(drive, txtContent, `${obj.Codice}.txt`, productFolderId);
     
-    res.json({ ok: true, message: "Cartella, Foto e TXT caricati con successo su Google Drive", folder: productFolderName });
+    res.json({ ok: true, message: "Asset caricati su Drive", folder: productFolderName });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
 app.get("/api/vinted/list-approvati", async (req, res) => {
   try {
     const { sheets, sheetId } = await getSheetsClient();
-    const resp = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${SHEET_TAB}!A1:Z1000` });
+    const resp = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${SHEET_TAB}!A1:Z10000` });
     const values = resp.data.values || [];
     const header = values[0];
     const out = values.slice(1).map(r => {
@@ -299,60 +371,37 @@ app.get("/dashboard", (req, res) => {
     .missing-box{color:#ffcd4c;font-size:11px;margin-top:5px;font-style:italic}
     button{padding:8px 12px;border-radius:8px;border:0;cursor:pointer;background:#4c7dff;color:#fff}
     button:disabled{background:#555;cursor:not-allowed}
-    .nav{margin-bottom:20px} .nav a{color:#4c7dff;margin-right:15px;text-decoration:none}
   </style></head>
   <body>
     <h1>📦 Dashboard Operativa Vinted</h1>
-    <div class="nav"><button onclick="window.location.href='/'">⬅ Home</button> <button onclick="load()">🔄 Ricarica Dati</button></div>
+    <div><button onclick="window.location.href='/'">⬅ Home</button> <button onclick="load()">🔄 Ricarica</button></div>
     <div id="status"></div>
     <table>
-      <thead><tr><th>Codice</th><th>Descrizione & Mancanti</th><th>Stato</th><th>Azione Google Drive</th></tr></thead>
+      <thead><tr><th>Codice</th><th>Info & Mancanti</th><th>Stato</th><th>Azione Drive</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
     <script>
       async function load(){
-        document.getElementById('status').innerText = "⏳ Caricamento...";
         const r = await fetch('/api/vinted/list-approvati');
         const j = await r.json();
-        document.getElementById('status').innerText = "✅ Dati sincronizzati";
         const tb = document.getElementById('tbody');
         tb.innerHTML = j.articoli.map(a => {
           const isPronto = a.pronto === 'TRUE';
           return \`<tr>
             <td><b>\${a.codice}</b></td>
-            <td>
-              \${a.descrizione || '---'}
-              \${a.missing.length ? '<div class="missing-box">Mancano: ' + a.missing.join(', ') + '</div>' : ''}
-            </td>
+            <td>\${a.descrizione || '---'}\${a.missing.length ? '<div class="missing-box">Mancano: ' + a.missing.join(', ') + '</div>' : ''}</td>
             <td><span class="pill \${isPronto?'pill-ok':'pill-no'}">\${isPronto?'PRONTO':'INCOMPLETO'}</span></td>
-            <td><button id="btn-\${a.codice}" onclick="uploadToDrive('\${a.codice}')">\${isPronto ? 'Invia a Drive' : 'Completa Campi'}</button></td>
+            <td><button id="btn-\${a.codice}" onclick="toDrive('\${a.codice}')">\${isPronto?'Invia a Drive':'Incompleto'}</button></td>
           </tr>\`;
         }).join('');
       }
-      
-      async function uploadToDrive(c){
+      async function toDrive(c){
         const btn = document.getElementById('btn-'+c);
-        const oldText = btn.innerText;
-        btn.disabled = true;
-        btn.innerText = "⏳ Invio...";
-        
-        try {
-          const r = await fetch('/api/vinted/upload-to-drive?codice=' + c);
-          const j = await r.json();
-          if(j.ok){
-            alert("✅ Caricamento completato!\\nCartella: " + j.folder);
-            btn.innerText = "✅ Inviato";
-            btn.style.background = "#1fda85";
-          } else {
-            alert("❌ Errore: " + (j.missing ? "Campi mancanti: " + j.missing.join(', ') : j.error));
-            btn.disabled = false;
-            btn.innerText = oldText;
-          }
-        } catch(e) {
-          alert("❌ Errore di connessione");
-          btn.disabled = false;
-          btn.innerText = oldText;
-        }
+        btn.disabled = true; btn.innerText = "⏳...";
+        const r = await fetch('/api/vinted/upload-to-drive?codice=' + c);
+        const j = await r.json();
+        if(j.ok){ alert("✅ Caricato!"); btn.innerText = "✅ OK"; btn.style.background = "#1fda85"; }
+        else { alert("❌ Errore: " + (j.missing ? j.missing.join(', ') : j.error)); btn.disabled = false; btn.innerText = "Riprova"; }
       }
       load();
     </script></body></html>`);
@@ -365,18 +414,13 @@ app.get("/", (req, res) => {
   <body>
     <div class="card">
       <h1>🚀 SyncFED - Controllo Operativo</h1>
-      <button class="primary" onclick="call('/api/step3/export-delta')">1. Esegui Export DELTA</button>
-      <button class="ok" onclick="window.location.href='/dashboard'">2. Vai alla Dashboard Vinted</button>
+      <button class="primary" onclick="call('/api/step3/export-delta')">1. Export DELTA</button>
+      <button class="ok" onclick="window.location.href='/dashboard'">2. Vai alla Dashboard</button>
       <button style="background:#ffcd4c" onclick="call('/api/test/google-key')">Test Google Key</button>
-      <pre id="out">In attesa di comando...</pre>
+      <pre id="out">In attesa...</pre>
     </div>
-    <script>async function call(p){ const out=document.getElementById('out'); out.innerText='...'; const r=await fetch(p); const j=await r.json(); out.innerText=JSON.stringify(j,null,2); }</script>
+    <script>async function call(p){ const out=document.getElementById('out'); const r=await fetch(p); const j=await r.json(); out.innerText=JSON.stringify(j,null,2); }</script>
   </body></html>`);
 });
 
-/* =========================================================
-   START SERVER
-   ========================================================= */
-app.listen(PORT, () => {
-  console.log(`🚀 SyncFED avviato sulla porta ${PORT} - Solo caricamento Drive (Niente Download)`);
-});
+app.listen(PORT, () => console.log(`🚀 SyncFED su porta ${PORT}`));
