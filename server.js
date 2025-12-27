@@ -4,7 +4,7 @@
  * - File completo (Richiesta utente memorizzata).
  * - Ripristinata logica Delta completa (Update vs Insert) basata su Codice.
  * - Protezione Header rigorosa con errore descrittivo.
- * - Google Drive: Creazione cartella "DATI_VINTED / CODICE - TITOLO".
+ * - Google Drive: Creazione automatica cartella "DATI_VINTED / CODICE - TITOLO".
  * - Asset Drive: Caricamento automatico di 5 foto e file TXT (niente download locale).
  */
 
@@ -249,7 +249,6 @@ app.get("/api/step3/export-delta", async (req, res) => {
     const values = resp.data.values || [];
     const existingHeader = values[0] || [];
 
-    // Protezione Header
     if (existingHeader.length > 0) {
        const match = SHEET_HEADERS.every((h, i) => normalizeValue(h) === normalizeValue(existingHeader[i]));
        if (!match) return res.status(400).json({ ok: false, error: "🔒 Export bloccato: lo Sheet NON è sincronizzato (header diverso)." });
@@ -279,7 +278,6 @@ app.get("/api/step3/export-delta", async (req, res) => {
       } else {
         const merged = [...found.data];
         let changed = false;
-        // Colonne da sincronizzare forzatamente da Bman
         [0, 1, 2, 3, 5, 6, 7, 9, 11, 13, 15, 16, 17].forEach(idx => {
           if (normalizeValue(merged[idx]) !== normalizeValue(newRow[idx])) { merged[idx] = newRow[idx]; changed = true; }
         });
