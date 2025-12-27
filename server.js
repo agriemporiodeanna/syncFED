@@ -1,9 +1,8 @@
 /**
- * SyncFED – VERSIONE JS STABILE (FIX ESTRAZIONE FOTO BMAN)
+ * SyncFED – VERSIONE JS STABILE
  * - Sincronizzazione Delta: Bman -> Google Sheet.
- * - Fix Mappatura Foto: Estrazione URL dall'oggetto nidificato di Bman.
- * - Dashboard: Visualizzazione articoli approvati.
- * - Google Drive: Generazione file INFO.txt.
+ * - Dashboard: Stato OK basato solo sulle traduzioni (IT, FR, ES).
+ * - Google Drive: Generazione file INFO.txt senza vincolo sulle foto.
  */
 
 import "dotenv/config";
@@ -79,6 +78,7 @@ async function getAnagrafiche({ numeroPagina = 1, filtri = [] } = {}) {
    ROTTE API
    ========================================================= */
 
+// 1. EXPORT DELTA
 app.get("/api/step3/export-delta", async (req, res) => {
   try {
     const auth = await getGoogleAuth();
@@ -112,9 +112,6 @@ app.get("/api/step3/export-delta", async (req, res) => {
     const updates = [], inserts = [];
     for (const a of articoli) {
       const cod = String(a.codice).trim();
-      
-      // LOGICA ESTRAZIONE FOTO FIX:
-      // Bman può restituire le foto in diversi formati a seconda della versione API
       let fotoUrls = [];
       if (a.foto && Array.isArray(a.foto)) {
         fotoUrls = a.foto.map(f => typeof f === 'string' ? f : (f.url || f.link || ""));
@@ -134,7 +131,6 @@ app.get("/api/step3/export-delta", async (req, res) => {
       else {
         const merged = [...found.data];
         let changed = false;
-        // Controllo delta su tutte le colonne critiche incluse le foto (18-22)
         const columnsToCheck = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 16, 17, 18, 19, 20, 21, 22];
         columnsToCheck.forEach(idx => { 
           if (normalizeValue(merged[idx]) !== normalizeValue(newRow[idx])) { 
@@ -156,7 +152,7 @@ app.get("/api/step3/export-delta", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
-// GENERAZIONE TXT SU DRIVE
+// 2. GENERAZIONE TXT (SENZA CONTROLLO FOTO)
 app.get("/api/vinted/generate-txt", async (req, res) => {
   const { codice } = req.query;
   try {
@@ -169,15 +165,18 @@ app.get("/api/vinted/generate-txt", async (req, res) => {
     const row = values.slice(1).find(r => String(r[header.indexOf("Codice")]).trim() === codice);
     if (!row) throw new Error("Articolo non trovato");
     const d = {}; header.forEach((k, i) => d[k] = row[i] || "");
+    
     const rootId = await ensureFolder(drive, "DATI_VINTED");
     const prodFolderId = await ensureFolder(drive, `${codice} - ${d.Titolo}`, rootId);
+    
     const content = `CODICE: ${codice}\n\nIT: ${d.Titolo}\n${d.Descrizione_IT}\n\nFR: ${d.Titolo_FR}\n${d.Descrizione_FR}\n\nES: ${d.Titolo_ES}\n${d.Descrizione_ES}\n\nPREZZO: ${d.Prezzo_Online}\nBRAND: ${d.Brand}`;
+    
     await drive.files.create({ resource: { name: `INFO_${codice}.txt`, parents: [prodFolderId] }, media: { mimeType: 'text/plain', body: content } });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
-// LISTA DASHBOARD
+// 3. LISTA DASHBOARD (STATO OK SOLO SU TRADUZIONI)
 app.get("/api/vinted/list", async (req, res) => {
   try {
     const auth = await getGoogleAuth();
@@ -191,13 +190,19 @@ app.get("/api/vinted/list", async (req, res) => {
       if (!obj.Descrizione_IT) missing.push("IT");
       if (!obj.Titolo_FR || !obj.Descrizione_FR) missing.push("FR");
       if (!obj.Titolo_ES || !obj.Descrizione_ES) missing.push("ES");
-      if (!obj.Foto_1) missing.push("FOTO");
-      return { codice: obj.Codice, titolo: obj.Titolo, pronto: obj.PRONTO_PER_VINTED, script: obj.Script, missing };
+      
+      // L'articolo è considerato pronto se non mancano traduzioni
+      const isOk = missing.length === 0;
+      
+      return { codice: obj.Codice, titolo: obj.Titolo, pronto: isOk ? "TRUE" : "FALSE", script: obj.Script, missing };
     }).filter(x => normalizeValue(x.script) === "approvato");
     res.json({ ok: true, articoli: out });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
+/* =========================================================
+   UI
+   ========================================================= */
 app.get("/dashboard", (req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.send(`<!doctype html><html><head><meta charset="utf-8"/><title>Dashboard</title><style>body{font-family:sans-serif;background:#0b0f17;color:#fff;padding:20px}table{width:100%;border-collapse:collapse}th,td{padding:12px;border-bottom:1px solid #26324d;text-align:left}.missing{color:#ffcd4c;font-size:11px;display:block}button{background:#4c7dff;color:#fff;border:none;padding:8px 12px;border-radius:5px;cursor:pointer;font-weight:bold}</style></head><body><h1>📦 Dashboard Vinted</h1><button onclick="load()">🔄 Ricarica</button><div id="st"></div><table><thead><tr><th>Codice</th><th>Titolo</th><th>Stato</th><th>Azione</th></tr></thead><tbody id="tb"></tbody></table><script>async function load(){document.getElementById('st').innerText='⏳...';const r=await fetch('/api/vinted/list');const j=await r.json();document.getElementById('st').innerText='';document.getElementById('tb').innerHTML=j.articoli.map(a=>'<tr><td><b>'+a.codice+'</b></td><td>'+a.titolo+'<span class="missing">'+(a.missing.length?"Mancano: "+a.missing.join(", "):"")+'</span></td><td>'+(a.pronto==="TRUE"?"✅":"❌")+'</td><td><button onclick="gen(\\''+a.codice+'\\')">📄 Crea TXT su Drive</button></td></tr>').join('');}async function gen(c){const r=await fetch('/api/vinted/generate-txt?codice='+c);const j=await r.json();alert(j.ok?'✅ File INFO generato su Drive!':'❌ Errore');}load();</script></body></html>`);
@@ -208,4 +213,4 @@ app.get("/", (req, res) => {
   res.send(`<!doctype html><html><head><meta charset="utf-8"/><title>SyncFED</title><style>body{font-family:Arial;padding:40px;background:#0b0f17;color:#fff}button{padding:15px 25px;border-radius:10px;border:0;cursor:pointer;font-weight:bold;margin:10px;background:#1fda85;color:#000}</style></head><body><h1>🚀 SyncFED Operativo</h1><button onclick="fetch('/api/step3/export-delta').then(r=>r.json()).then(j=>alert('Sync OK: '+j.total))">1. Esegui Export Delta</button><button style="background:#4c7dff;color:#fff" onclick="window.location.href='/dashboard'">2. Dashboard Vinted</button></body></html>`);
 });
 
-app.listen(PORT, () => console.log(`🚀 Porta ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Server porta ${PORT}`));
