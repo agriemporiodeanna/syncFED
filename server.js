@@ -32,7 +32,7 @@ const BMAN_CHIAVE = String(process.env.BMAN_API_KEY || "").trim();
 const FTP_CONFIG = {
     host: "ftp.agriemporiodeanna.com", 
     user: process.env.FTP_USER, 
-    password: process.env.FTP_PASSWORD, 
+    password: process.env.FTP_PASS, // Aggiornato da FTP_PASSWORD a FTP_PASS
     secure: false
 };
 
@@ -302,4 +302,6 @@ app.get("/", (req, res) => {
   </body></html>`);
 });
 
-app.listen(PORT, () => console.log(`🚀 Porta ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`🚀 Porta ${PORT}`);
+});
