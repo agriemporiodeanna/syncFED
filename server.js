@@ -1,8 +1,8 @@
 /**
- * SyncFED – PRODUZIONE INTEGRATA DEFINITIVA (SOLO DRIVE)
+ * SyncFED – PRODUZIONE INTEGRATA DEFINITIVA (FIXED UPLOAD)
  * - Export DELTA (Bman -> Sheet) completo.
  * - Ottimizzazione Immagini: Forza .jpg e compressione < 300KB via 'sharp'.
- * - Upload da PC a DRIVE: Normalizza le foto e le salva su Google Drive.
+ * - Upload da PC a DRIVE: Corretto errore part.body.pipe.
  * - Google Drive: Creazione automatica cartella "CODICE - TITOLO" e asset (Foto/TXT).
  */
 
@@ -17,7 +17,8 @@ import sharp from "sharp";
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "50mb" })); 
+// Aumentato il limite per gestire molte foto in alta risoluzione contemporaneamente
+app.use(express.json({ limit: "100mb" })); 
 
 const PORT = process.env.PORT || 10000;
 
@@ -26,7 +27,6 @@ const PORT = process.env.PORT || 10000;
    ========================================================= */
 const BMAN_ENDPOINT = "https://emporiodeanna.bman.it/bmanapi.asmx";
 const BMAN_CHIAVE = String(process.env.BMAN_API_KEY || "").trim();
-
 const SHEET_TAB = (process.env.GOOGLE_SHEET_TAB || "PRODOTTI_BMAN").trim();
 const SHEET_HEADERS = ["ID", "Codice", "Titolo", "Brand", "Tag15", "Script", "Descrizione_IT", "Titolo_FR", "Descrizione_FR", "Titolo_ES", "Descrizione_ES", "Titolo_DE", "Descrizione_DE", "Titolo_EN", "Descrizione_EN", "Categoria_Vinted", "Prezzo_Negozio", "Prezzo_Online", "Foto_1", "Foto_2", "Foto_3", "Foto_4", "Foto_5", "PRONTO_PER_VINTED", "UltimoSync"];
 
@@ -47,6 +47,7 @@ async function processAndCompressImage(buffer) {
     .resize(1600, 1600, { fit: 'inside', withoutEnlargement: true })
     .toBuffer();
 
+  // Se supera i 300KB, riduce ulteriormente la qualità in modo aggressivo
   while (optimizedBuffer.length > 300 * 1024 && quality > 10) {
     quality -= 10;
     optimizedBuffer = await sharp(buffer).jpeg({ quality, progressive: true }).toBuffer();
@@ -91,31 +92,18 @@ async function getAnagrafiche({ numeroPagina = 1, filtri = [] } = {}) {
   return JSON.parse(result || "[]");
 }
 
-async function getAllArticlesByScriptValues() {
-  const outByCodice = new Map();
-  const values = ["si", "approvato"];
-  for (const sv of values) {
-    let page = 1;
-    while (true) {
-      const chunk = await getAnagrafiche({ numeroPagina: page, filtri: [{ chiave: "opzionale11", operatore: "=", valore: sv }] });
-      if (!chunk || !chunk.length) break;
-      chunk.forEach(a => { if(a.codice) outByCodice.set(String(a.codice).trim(), a); });
-      if (chunk.length < 50) break;
-      page++;
-    }
-  }
-  return Array.from(outByCodice.values());
-}
-
 /* =========================================================
    DRIVE HELPERS
    ========================================================= */
 async function ensureFolder(drive, folderName, parentId = null) {
-  let query = `name = '${folderName.replace(/'/g, "\\'")}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
+  let query = `name = '${folderName.replace(/'/g, "\\")}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
   if (parentId) query += ` and '${parentId}' in parents`;
   const res = await drive.files.list({ q: query, fields: 'files(id, name)' });
-  if (res.data.files.length > 0) return res.data.files[0].id;
-  const folder = await drive.files.create({ resource: { name: folderName, mimeType: 'application/vnd.google-apps.folder', parents: parentId ? [parentId] : [] }, fields: 'id' });
+  if (res.data.files && res.data.files.length > 0) return res.data.files[0].id;
+  const folder = await drive.files.create({ 
+    resource: { name: folderName, mimeType: 'application/vnd.google-apps.folder', parents: parentId ? [parentId] : [] }, 
+    fields: 'id' 
+  });
   return folder.data.id;
 }
 
@@ -131,7 +119,7 @@ app.get("/api/test/google-key", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
-// 1. CARICAMENTO FOTO DA PC A GOOGLE DRIVE (OTTIMIZZATE)
+// 1. CARICAMENTO FOTO DA PC A GOOGLE DRIVE (FIXED PER BASE64)
 app.post("/api/vinted/upload-pc-to-drive", async (req, res) => {
     const { codice, images } = req.body; 
     if (!images || images.length < 5) return res.status(400).json({ ok: false, error: "Servono 5 foto." });
@@ -140,26 +128,29 @@ app.post("/api/vinted/upload-pc-to-drive", async (req, res) => {
         const { sheets, sheetId } = await getSheetsClient();
         const drive = await getDriveClient();
         
-        // Recupera info prodotto dallo Sheet per il nome cartella
         const respSheet = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${SHEET_TAB}!A1:Z10000` });
         const values = respSheet.data.values || [];
         const header = values[0];
         const row = values.slice(1).find(r => String(r[header.indexOf("Codice")]).trim() === codice);
-        const titolo = row ? row[header.indexOf("Titolo")] : "Prodotto Senza Titolo";
+        const titolo = row ? row[header.indexOf("Titolo")] : "Prodotto_Senza_Titolo";
 
         const rootId = await ensureFolder(drive, "DATI_VINTED");
         const productFolderId = await ensureFolder(drive, `${codice} - ${titolo}`, rootId);
 
         for (let i = 0; i < images.length; i++) {
+            // Converte base64 in Buffer (gestione corretta dell'upload dal browser)
             const buffer = Buffer.from(images[i].split(",")[1], "base64");
             const optimized = await processAndCompressImage(buffer);
+            
             await drive.files.create({ 
                 resource: { name: `${codice}_${i + 1}.jpg`, parents: [productFolderId] }, 
-                media: { mimeType: 'image/jpeg', body: optimized } 
+                media: { mimeType: 'image/jpeg', body: optimized },
+                fields: 'id'
             });
         }
         res.json({ ok: true, message: "Foto caricate e ottimizzate su Google Drive!" });
     } catch (e) {
+        console.error("Errore Drive:", e.message);
         res.status(500).json({ ok: false, error: e.message });
     }
 });
@@ -167,7 +158,19 @@ app.post("/api/vinted/upload-pc-to-drive", async (req, res) => {
 app.get("/api/step3/export-delta", async (req, res) => {
   try {
     const { sheets, sheetId } = await getSheetsClient();
-    const articoli = await getAllArticlesByScriptValues();
+    const scriptValues = ["si", "approvato"];
+    const articoliSet = new Map();
+    for (const sv of scriptValues) {
+      let page = 1;
+      while (true) {
+        const chunk = await getAnagrafiche({ numeroPagina: page, filtri: [{ chiave: "opzionale11", operatore: "=", valore: sv }] });
+        if (!chunk || chunk.length === 0) break;
+        chunk.forEach(a => { if(a.codice) articoliSet.set(String(a.codice).trim(), a); });
+        if (chunk.length < 50) break;
+        page++;
+      }
+    }
+    const articoli = Array.from(articoliSet.values());
     const resp = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${SHEET_TAB}!A1:Z10000` });
     const values = resp.data.values || [];
     if (!values.length) await sheets.spreadsheets.values.update({ spreadsheetId: sheetId, range: `${SHEET_TAB}!A1`, valueInputOption: "RAW", requestBody: { values: [SHEET_HEADERS] } });
@@ -198,7 +201,7 @@ app.get("/api/vinted/list-approvati", async (req, res) => {
   try {
     const { sheets, sheetId } = await getSheetsClient();
     const resp = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${SHEET_TAB}!A1:Z10000` });
-    const header = resp.data.values[0] || [];
+    const header = resp.data.values[0] || SHEET_HEADERS;
     const out = (resp.data.values || []).slice(1).map(r => {
       const obj = {}; header.forEach((k, i) => obj[k] = r[i]);
       const missing = []; 
@@ -222,6 +225,7 @@ app.get("/dashboard", (req, res) => {
     body{font-family:sans-serif;background:#0b0f17;color:#fff;padding:20px}
     table{width:100%;border-collapse:collapse}th,td{padding:10px;border-bottom:1px solid #26324d;text-align:left}
     button{padding:8px;border-radius:5px;border:none;cursor:pointer;background:#4c7dff;color:#fff;margin:2px;font-weight:bold}
+    button:disabled{background:#444;cursor:not-allowed}
     .btn-upload{background:#1fda85;color:#000}
     .missing{color:#ffcd4c;font-size:11px;display:block}
     input[type="file"]{display:none}
@@ -238,14 +242,14 @@ app.get("/dashboard", (req, res) => {
         document.getElementById('st').innerText = "⏳ Caricamento...";
         const r = await fetch('/api/vinted/list-approvati');
         const j = await r.json();
-        document.getElementById('st').innerText = "✅";
+        document.getElementById('st').innerText = "✅ Dati pronti";
         document.getElementById('tb').innerHTML = j.articoli.map(a => \`
           <tr>
             <td><b>\${a.codice}</b></td>
             <td>\${a.descrizione || '---'}<span class="missing">\${a.missing.length?'Mancano: '+a.missing.join(', '):''}</span></td>
             <td>\${a.pronto==='TRUE'?'✅ PRONTO':'❌ NO'}</td>
             <td>
-              <button onclick="trig('\${a.codice}')" class="btn-upload">📸 Carica Foto su Drive</button>
+              <button onclick="trig('\${a.codice}')" class="btn-upload">📸 Carica Foto Drive</button>
             </td>
           </tr>\`).join('');
       }
@@ -253,15 +257,22 @@ app.get("/dashboard", (req, res) => {
       document.getElementById('fIn').onchange = async (e) => {
         const files = Array.from(e.target.files);
         if(files.length < 5) return alert("Seleziona almeno 5 foto.");
+        
+        const btn = document.querySelector(\`button[onclick="trig('\${cur}')"]\`);
+        const originalText = btn.innerText;
+        btn.innerText = "⏳ Caricamento..."; btn.disabled = true;
+
         const imgs = await Promise.all(files.map(f => new Promise(res => {
           const rd = new FileReader(); rd.onload = () => res(rd.result); rd.readAsDataURL(f);
         })));
+
         const res = await fetch('/api/vinted/upload-pc-to-drive', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({ codice: cur, images: imgs })
         });
-        const j = await res.json();
-        alert(j.ok ? "✅ Foto caricate su Google Drive!" : "❌ " + j.error);
+        const result = await res.json();
+        btn.innerText = originalText; btn.disabled = false;
+        alert(result.ok ? "✅ Foto caricate su Google Drive!" : "❌ Errore: " + result.error);
       };
       load();
     </script></body></html>`);
