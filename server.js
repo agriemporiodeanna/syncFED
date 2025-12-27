@@ -1,8 +1,8 @@
 /**
- * SyncFED – VERSIONE JS STABILE (FIX FOTO)
+ * SyncFED – VERSIONE JS STABILE (FIX FOTO & SYNTAX)
  * - Sincronizzazione Delta: Bman -> Google Sheet (Inclusi link foto).
- * - Dashboard: Visualizzazione articoli approvati e campi mancanti.
- * - Google Drive: Generazione automatico file INFO.txt.
+ * - Dashboard: Visualizzazione articoli approvati.
+ * - Google Drive: Generazione file INFO.txt.
  */
 
 import "dotenv/config";
@@ -111,36 +111,15 @@ app.get("/api/step3/export-delta", async (req, res) => {
     const updates = [], inserts = [];
     for (const a of articoli) {
       const cod = String(a.codice).trim();
-      
-      // Estrazione Link Foto (Bman restituisce un array 'foto')
       const fotoList = a.foto && Array.isArray(a.foto) ? a.foto.map(f => f.url || "") : [];
 
       const newRow = [
-        a.ID, 
-        a.codice, 
-        a.opzionale2 || a.Titolo, 
-        a.opzionale1, 
-        "", // Tag15
-        a.opzionale11, 
-        (a.opzionale12 || "").trim(), // Desc_IT
-        a.opzionale6, 
-        (a.opzionale13 || "").trim(), // Desc_FR
-        a.opzionale8, 
-        (a.opzionale15 || "").trim(), // Desc_ES
-        a.opzionale9, 
-        "", 
-        a.opzionale7, 
-        "", 
-        a.opzionale10, 
-        a.prza, 
-        a.przb, 
-        fotoList[0] || "", // Foto_1
-        fotoList[1] || "", // Foto_2
-        fotoList[2] || "", // Foto_3
-        fotoList[3] || "", // Foto_4
-        fotoList[4] || "", // Foto_5
-        "FALSE", // PRONTO
-        nowIso()
+        a.ID, a.codice, a.opzionale2 || a.Titolo, a.opzionale1 || "", "", a.opzionale11 || "", 
+        (a.opzionale12 || "").trim(), a.opzionale6 || "", (a.opzionale13 || "").trim(), 
+        a.opzionale8 || "", (a.opzionale15 || "").trim(), a.opzionale9 || "", "", 
+        a.opzionale7 || "", "", a.opzionale10 || "", a.prza || "", a.przb || "", 
+        fotoList[0] || "", fotoList[1] || "", fotoList[2] || "", fotoList[3] || "", fotoList[4] || "", 
+        "FALSE", nowIso()
       ];
       
       const found = existingMap.get(cod);
@@ -148,7 +127,6 @@ app.get("/api/step3/export-delta", async (req, res) => {
       else {
         const merged = [...found.data];
         let changed = false;
-        // Controllo tutte le colonne incluse le foto (indici 18-22)
         [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 16, 17, 18, 19, 20, 21, 22].forEach(idx => { 
           if (normalizeValue(merged[idx]) !== normalizeValue(newRow[idx])) { 
             merged[idx] = newRow[idx]; 
@@ -169,7 +147,6 @@ app.get("/api/step3/export-delta", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
-// Altre rotte (generate-txt, list, UI) rimangono invariate...
 app.get("/api/vinted/generate-txt", async (req, res) => {
   const { codice } = req.query;
   try {
@@ -217,3 +194,7 @@ app.get("/dashboard", (req, res) => {
 
 app.get("/", (req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(`<!doctype html><html><head><meta charset="utf-8"/><title>SyncFED</title><style>body{font-family:Arial;padding:40px;background:#0b0f17;color:#fff}button{padding:15px 25px;border-radius:10px;border:0;cursor:pointer;font-weight:bold;margin:10px;background:#1fda85;color:#000}</style></head><body><h1>🚀 SyncFED Operativo</h1><button onclick="fetch('/api/step3/export-delta').then(r=>r.json()).then(j=>alert('Sync OK: '+j.total))">1. Esegui Export Delta</button><button style="background:#4c7dff;color:#fff" onclick="window.location.href='/dashboard'">2. Dashboard Vinted</button></body></html>`);
+});
+
+app.listen(PORT, () => console.log(`🚀 Server porta ${PORT}`));
