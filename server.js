@@ -1,5 +1,5 @@
 /**
- * SyncFED – PRODUZIONE INTEGRATA DEFINITIVA
+ * SyncFED – PRODUZIONE INTEGRATA DEFINITIVA (FIXED)
  * - Export DELTA (Bman -> Sheet) con Delta Sync.
  * - Ottimizzazione Immagini: Forza .jpg e compressione < 300KB.
  * - Upload FTP: Invio a server.agriemporiodeanna.com/imgebay.
@@ -213,8 +213,42 @@ app.get("/api/vinted/list-approvati", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.get("/api/vinted/upload-to-drive", async (req, res) => {
+  try {
+    const codice = req.query.codice;
+    const { sheets, sheetId } = await getSheetsClient();
+    const drive = await getDriveClient();
+    const resp = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${SHEET_TAB}!A1:Z10000` });
+    const header = resp.data.values[0];
+    const row = resp.data.values.slice(1).find(r => String(r[1]).trim() === codice);
+    const obj = {}; header.forEach((k, i) => obj[k] = row[i]);
+
+    const rootId = await ensureFolder(drive, "DATI_VINTED");
+    const productFolderId = await ensureFolder(drive, `${obj.Codice} - ${obj.Titolo}`, rootId);
+
+    for (let i = 1; i <= 5; i++) {
+        const response = await fetch(obj[`Foto_${i}`]);
+        const buffer = Buffer.from(await response.arrayBuffer());
+        const optimized = await processAndCompressImage(buffer);
+        await drive.files.create({ resource: { name: `Foto_${i}.jpg`, parents: [productFolderId] }, media: { mimeType: 'image/jpeg', body: optimized } });
+    }
+
+    const txt = `CODICE: ${codice}\n\nIT: ${obj.Titolo}\n${obj.Descrizione_IT}\n\nFR: ${obj.Titolo_FR}\n${obj.Descrizione_FR}\n\nES: ${obj.Titolo_ES}\n${obj.Descrizione_ES}`;
+    await drive.files.create({ resource: { name: `${obj.Codice}.txt`, parents: [productFolderId] }, media: { mimeType: 'text/plain', body: Readable.from([txt]) } });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/test/google-key", async (req, res) => {
+  try {
+    const { sheets, sheetId } = await getSheetsClient();
+    const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId });
+    res.json({ ok: true, message: "Connessione Google OK", title: meta.data.properties.title });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 /* =========================================================
-   DASHBOARD
+   DASHBOARD UI
    ========================================================= */
 app.get("/dashboard", (req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -269,4 +303,4 @@ app.get("/dashboard", (req, res) => {
 
 app.get("/", (req, res) => { res.send("<h1>SyncFED Operativo</h1><a href='/dashboard'>Dashboard</a>"); });
 
-app.listen(PORT, () => console.log(\`🚀 Server porta \${PORT}\`));
+app.listen(PORT, () => console.log(`🚀 Server porta ${PORT}`));
