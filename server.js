@@ -1,10 +1,9 @@
 /**
- * SyncFED – PRODUZIONE INTEGRATA DEFINITIVA (FIXED SYNTAX)
+ * SyncFED – PRODUZIONE INTEGRATA DEFINITIVA (FIXED 530 ERROR)
  * - Export DELTA (Bman -> Sheet) con Delta Sync.
  * - Ottimizzazione Immagini: Forza .jpg e compressione < 300KB.
  * - Upload FTP: Invio a ftp.agriemporiodeanna.com/imgebay.
- * - Google Drive: Creazione cartelle e salvataggio asset.
- * - Test FTP: Pulsante per verificare la connessione al server.
+ * - Test FTP: Pulsante per verificare l'autenticazione.
  */
 
 import "dotenv/config";
@@ -139,13 +138,14 @@ app.get("/api/test/google-key", async (req, res) => {
 });
 
 app.get("/api/test/ftp-connection", async (req, res) => {
+  console.log(`Tentativo FTP con utente: ${FTP_CONFIG.user}`);
   const client = new ftp.Client();
   try {
     await client.access(FTP_CONFIG);
     const list = await client.list("/imgebay");
-    res.json({ ok: true, message: "Connessione FTP OK!", filesInFolder: list.length });
+    res.json({ ok: true, message: "Connessione FTP OK!", files: list.length });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: `Errore FTP: ${e.message}. Verifica User e Password.` });
   } finally {
     client.close();
   }
@@ -201,15 +201,13 @@ app.get("/api/vinted/list-approvati", async (req, res) => {
 
 app.post("/api/vinted/upload-pc-to-bman", async (req, res) => {
     const { codice, images } = req.body; 
-    if (!images || images.length < 5) return res.status(400).json({ ok: false, error: "Servono 5 foto." });
     const client = new ftp.Client();
     try {
         await client.access(FTP_CONFIG);
         for (let i = 0; i < images.length; i++) {
             const buffer = Buffer.from(images[i].split(",")[1], "base64");
             const optimized = await processAndCompressImage(buffer);
-            const fileName = `${codice}_${i + 1}.jpg`;
-            await client.uploadFrom(Readable.from(optimized), `/imgebay/${fileName}`);
+            await client.uploadFrom(Readable.from(optimized), `/imgebay/${codice}_${i + 1}.jpg`);
         }
         res.json({ ok: true });
     } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
@@ -285,14 +283,14 @@ app.get("/dashboard", (req, res) => {
         const files = Array.from(e.target.files);
         if(files.length < 5) return alert("Seleziona 5 foto.");
         const imgs = await Promise.all(files.map(f => new Promise(res => {
-          const rd = new FileReader(); rd.onload = () => res(res(rd.result)); rd.readAsDataURL(f);
+          const rd = new FileReader(); rd.onload = () => res(rd.result); rd.readAsDataURL(f);
         })));
         const res = await fetch('/api/vinted/upload-pc-to-bman', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({ codice: cur, images: imgs })
         });
         const j = await res.json();
-        alert(j.ok ? "✅ Caricate su FTP!" : "❌ " + j.error);
+        alert(j.ok ? "✅ Caricate!" : "❌ " + j.error);
       };
       async function toD(c){ const r = await fetch('/api/vinted/upload-to-drive?codice='+c); const j = await r.json(); alert(j.ok ? '✅ Drive!' : '❌'); }
       load();
@@ -313,6 +311,4 @@ app.get("/", (req, res) => {
   </body></html>`);
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 Server porta ${PORT}`);
-});
+app.listen(PORT, () => { console.log(`🚀 Porta ${PORT}`); });
