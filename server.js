@@ -1,9 +1,10 @@
 /**
- * SyncFED – PRODUZIONE INTEGRATA DEFINITIVA (FIXED)
+ * SyncFED – PRODUZIONE INTEGRATA DEFINITIVA
  * - Export DELTA (Bman -> Sheet) con Delta Sync.
- * - Ottimizzazione Immagini: Forza .jpg e compressione < 300KB.
+ * - Ottimizzazione Immagini: Forza .jpg e compressione < 300KB via 'sharp'.
  * - Upload FTP: Invio a server.agriemporiodeanna.com/imgebay.
  * - Google Drive: Creazione cartelle "CODICE - TITOLO" e salvataggio asset.
+ * - Dashboard: UI Completa con caricamento foto da PC e stato sincronizzazione.
  */
 
 import "dotenv/config";
@@ -120,7 +121,7 @@ async function getAllArticlesByScriptValues(scriptValues = ["si", "approvato"]) 
     let page = 1;
     while (true) {
       const chunk = await getAnagrafiche({ numeroPagina: page, filtri: [{ chiave: "opzionale11", operatore: "=", valore: sv }] });
-      if (!chunk.length) break;
+      if (!chunk || !chunk.length) break;
       chunk.forEach(a => {
         const cod = String(a?.codice ?? "").trim();
         if (cod && wanted.has(normalizeValue(a?.opzionale11))) outByCodice.set(cod, a);
@@ -147,6 +148,14 @@ async function ensureFolder(drive, folderName, parentId = null) {
 /* =========================================================
    ROTTE API
    ========================================================= */
+
+app.get("/api/test/google-key", async (req, res) => {
+  try {
+    const { sheets, sheetId } = await getSheetsClient();
+    const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId });
+    res.json({ ok: true, message: "Connessione Google OK", title: meta.data.properties.title });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
 
 app.post("/api/vinted/upload-pc-to-bman", async (req, res) => {
     const { codice, images } = req.body; 
@@ -192,7 +201,7 @@ app.get("/api/step3/export-delta", async (req, res) => {
     }
     if (updates.length) await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: sheetId, requestBody: { valueInputOption: "RAW", data: updates } });
     if (inserts.length) await sheets.spreadsheets.values.append({ spreadsheetId: sheetId, range: `${SHEET_TAB}!A2`, valueInputOption: "RAW", requestBody: { values: inserts } });
-    res.json({ ok: true, total: articoli.length });
+    res.json({ ok: true, total: articoli.length, updated: updates.length, inserted: inserts.length });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -200,13 +209,14 @@ app.get("/api/vinted/list-approvati", async (req, res) => {
   try {
     const { sheets, sheetId } = await getSheetsClient();
     const resp = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${SHEET_TAB}!A1:Z10000` });
-    const header = resp.data.values[0];
-    const out = resp.data.values.slice(1).map(r => {
+    const header = resp.data.values[0] || [];
+    const out = (resp.data.values || []).slice(1).map(r => {
       const obj = {}; header.forEach((k, i) => obj[k] = r[i]);
-      const missing = []; for (let i = 1; i <= 5; i++) if (!obj[`Foto_${i}`]) missing.push(`Foto_${i}`);
-      if (!obj.Descrizione_IT) missing.push("Descrizione_IT");
-      if (!obj.Titolo_FR || !obj.Descrizione_FR) missing.push("FR");
-      if (!obj.Titolo_ES || !obj.Descrizione_ES) missing.push("ES");
+      const missing = []; 
+      for (let i = 1; i <= 5; i++) if (!String(obj[`Foto_${i}`]||'').trim()) missing.push(`Foto_${i}`);
+      if (!String(obj.Descrizione_IT||'').trim()) missing.push("Descrizione_IT");
+      if (!String(obj.Titolo_FR||'').trim() || !String(obj.Descrizione_FR||'').trim()) missing.push("FR");
+      if (!String(obj.Titolo_ES||'').trim() || !String(obj.Descrizione_ES||'').trim()) missing.push("ES");
       return { codice: obj.Codice, descrizione: obj.Descrizione_IT, pronto: obj.PRONTO_PER_VINTED, missing, script: obj.Script };
     }).filter(x => normalizeValue(x.script) === "approvato");
     res.json({ ok: true, articoli: out });
@@ -219,15 +229,17 @@ app.get("/api/vinted/upload-to-drive", async (req, res) => {
     const { sheets, sheetId } = await getSheetsClient();
     const drive = await getDriveClient();
     const resp = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${SHEET_TAB}!A1:Z10000` });
-    const header = resp.data.values[0];
-    const row = resp.data.values.slice(1).find(r => String(r[1]).trim() === codice);
+    const header = resp.data.values[0] || [];
+    const row = resp.data.values.slice(1).find(r => String(r[header.indexOf("Codice")]).trim() === codice);
     const obj = {}; header.forEach((k, i) => obj[k] = row[i]);
 
     const rootId = await ensureFolder(drive, "DATI_VINTED");
     const productFolderId = await ensureFolder(drive, `${obj.Codice} - ${obj.Titolo}`, rootId);
 
     for (let i = 1; i <= 5; i++) {
-        const response = await fetch(obj[`Foto_${i}`]);
+        const url = obj[`Foto_${i}`];
+        if(!url) continue;
+        const response = await fetch(url);
         const buffer = Buffer.from(await response.arrayBuffer());
         const optimized = await processAndCompressImage(buffer);
         await drive.files.create({ resource: { name: `Foto_${i}.jpg`, parents: [productFolderId] }, media: { mimeType: 'image/jpeg', body: optimized } });
@@ -239,31 +251,24 @@ app.get("/api/vinted/upload-to-drive", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get("/api/test/google-key", async (req, res) => {
-  try {
-    const { sheets, sheetId } = await getSheetsClient();
-    const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId });
-    res.json({ ok: true, message: "Connessione Google OK", title: meta.data.properties.title });
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
 /* =========================================================
-   DASHBOARD UI
+   DASHBOARD & HOME UI
    ========================================================= */
 app.get("/dashboard", (req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.send(`<!doctype html><html><head><meta charset="utf-8"/><title>Dashboard</title>
   <style>
     body{font-family:sans-serif;background:#0b0f17;color:#fff;padding:20px}
-    table{width:100%;border-collapse:collapse}th,td{padding:10px;border-bottom:1px solid #26324d}
-    button{background:#4c7dff;color:#fff;border:none;padding:8px;border-radius:5px;cursor:pointer;margin:2px}
+    table{width:100%;border-collapse:collapse}th,td{padding:10px;border-bottom:1px solid #26324d;text-align:left}
+    button{background:#4c7dff;color:#fff;border:none;padding:8px;border-radius:5px;cursor:pointer;margin:2px;font-weight:bold}
     .btn-upload{background:#1fda85;color:#000}
     .missing{color:#ffcd4c;font-size:11px;display:block}
     input[type="file"]{display:none}
   </style></head>
   <body>
     <h1>📦 Dashboard Vinted</h1>
-    <button onclick="load()">🔄 Ricarica</button>
+    <button onclick="window.location.href='/'">⬅ Torna Home</button> <button onclick="load()">🔄 Ricarica</button>
+    <div id="status" style="margin:10px 0;font-size:14px"></div>
     <table><thead><tr><th>Codice</th><th>Descrizione</th><th>Stato</th><th>Azione</th></tr></thead><tbody id="tb"></tbody></table>
     <input type="file" id="fileInput" multiple accept="image/*" />
     <script>
@@ -274,11 +279,11 @@ app.get("/dashboard", (req, res) => {
         document.getElementById('tb').innerHTML = j.articoli.map(a => \`
           <tr>
             <td><b>\${a.codice}</b></td>
-            <td>\${a.descrizione}<span class="missing">\${a.missing.length?'Mancano: '+a.missing.join(', '):''}</span></td>
-            <td>\${a.pronto==='TRUE'?'✅ PRONTO':'❌ NO'}</td>
+            <td>\${a.descrizione || '---'}<span class="missing">\${a.missing.length?'Mancano: '+a.missing.join(', '):''}</span></td>
+            <td>\${a.pronto==='TRUE'?'✅ PRONTO':'❌ INCOMPLETO'}</td>
             <td>
               <button onclick="triggerUpload('\${a.codice}')" class="btn-upload">📸 Carica Foto PC</button>
-              <button onclick="toDrive('\${a.codice}')">Drive</button>
+              <button onclick="toDrive('\${a.codice}')" \${a.pronto==='TRUE'?'':'disabled'}>Drive</button>
             </td>
           </tr>\`).join('');
       }
@@ -296,11 +301,25 @@ app.get("/dashboard", (req, res) => {
         const result = await res.json();
         alert(result.ok ? "✅ Foto caricate su FTP!" : "❌ Errore");
       };
-      async function toDrive(c){ await fetch('/api/vinted/upload-to-drive?codice='+c); alert('Inviato!'); }
+      async function toDrive(c){ await fetch('/api/vinted/upload-to-drive?codice='+c); alert('Inviato a Drive!'); }
       load();
     </script></body></html>`);
 });
 
-app.get("/", (req, res) => { res.send("<h1>SyncFED Operativo</h1><a href='/dashboard'>Dashboard</a>"); });
+app.get("/", (req, res) => {
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(`<!doctype html><html><head><meta charset="utf-8"/><title>SyncFED</title>
+  <style>body{font-family:Arial;padding:40px;background:#0b0f17;color:#fff} .card{background:#111a2b;padding:30px;border-radius:15px;border:1px solid #26324d} button{padding:15px 25px;border-radius:10px;border:0;cursor:pointer;font-weight:bold;margin:10px} .primary{background:#4c7dff;color:#fff} .ok{background:#1fda85;color:#000} .warn{background:#ffcd4c;color:#1d1400} pre{background:#0b0f17;padding:20px;border:1px solid #26324d;margin-top:20px;border-radius:10px}</style></head>
+  <body>
+    <div class="card">
+      <h1>🚀 SyncFED - Controllo Operativo</h1>
+      <button class="primary" onclick="call('/api/step3/export-delta')">1. Esegui Export DELTA</button>
+      <button class="ok" onclick="window.location.href='/dashboard'">2. Vai alla Dashboard Vinted</button>
+      <button class="warn" onclick="call('/api/test/google-key')">Test Google Key</button>
+      <pre id="out">In attesa di comando...</pre>
+    </div>
+    <script>async function call(p){ const out=document.getElementById('out'); out.innerText='...'; const r=await fetch(p); const j=await r.json(); out.innerText=JSON.stringify(j,null,2); }</script>
+  </body></html>`);
+});
 
-app.listen(PORT, () => console.log(`🚀 Server porta ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Porta ${PORT}`));
