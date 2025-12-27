@@ -1,10 +1,11 @@
 /**
- * SyncFED – PRODUZIONE INTEGRATA DEFINITIVA (FIXED FTP & UI)
+ * SyncFED – PRODUZIONE INTEGRATA DEFINITIVA
  * - Export DELTA (Bman -> Sheet) completo di logica Update/Insert.
  * - Ottimizzazione Immagini: Forza .jpg e compressione < 300KB via 'sharp'.
  * - Upload FTP: Invio a ftp.agriemporiodeanna.com nella cartella /imgebay/.
  * - Google Drive: Creazione cartelle "CODICE - TITOLO" e asset (Foto/TXT).
  * - Dashboard: UI Completa con caricamento foto da PC, Test Key e Export Delta.
+ * - Test FTP: Nuovo pulsante per verificare la connessione al server.
  */
 
 import "dotenv/config";
@@ -32,7 +33,7 @@ const BMAN_CHIAVE = String(process.env.BMAN_API_KEY || "").trim();
 const FTP_CONFIG = {
     host: "ftp.agriemporiodeanna.com", 
     user: process.env.FTP_USER, 
-    password: process.env.FTP_PASS, // Aggiornato da FTP_PASSWORD a FTP_PASS
+    password: process.env.FTP_PASS, 
     secure: false
 };
 
@@ -139,6 +140,20 @@ app.get("/api/test/google-key", async (req, res) => {
     const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId });
     res.json({ ok: true, message: "Connessione Google OK", title: meta.data.properties.title });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// NUOVA ROTTA: TEST FTP
+app.get("/api/test/ftp-connection", async (req, res) => {
+  const client = new ftp.Client();
+  try {
+    await client.access(FTP_CONFIG);
+    const list = await client.list("/imgebay");
+    res.json({ ok: true, message: "Connessione FTP OK!", folder: "/imgebay", filesCount: list.length });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  } finally {
+    client.close();
+  }
 });
 
 app.get("/api/step3/export-delta", async (req, res) => {
@@ -292,16 +307,19 @@ app.get("/dashboard", (req, res) => {
 app.get("/", (req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.send(`<!doctype html><html><head><meta charset="utf-8"/><title>SyncFED</title>
-  <style>body{font-family:Arial;padding:40px;background:#0b0f17;color:#fff}.card{background:#111a2b;padding:30px;border-radius:15px;border:1px solid #26324d}button{padding:15px 25px;border-radius:10px;border:0;cursor:pointer;font-weight:bold;margin:10px}.primary{background:#4c7dff;color:#fff}.ok{background:#1fda85;color:#000}pre{background:#0b0f17;padding:20px;border:1px solid #26324d;margin-top:20px;border-radius:10px}</style></head>
+  <style>body{font-family:Arial;padding:40px;background:#0b0f17;color:#fff}.card{background:#111a2b;padding:30px;border-radius:15px;border:1px solid #26324d}button{padding:15px 25px;border-radius:10px;border:0;cursor:pointer;font-weight:bold;margin:10px}.primary{background:#4c7dff;color:#fff}.ok{background:#1fda85;color:#000}.test-ftp{background:#ff5722;color:#fff}pre{background:#0b0f17;padding:20px;border:1px solid #26324d;margin-top:20px;border-radius:10px}</style></head>
   <body><div class="card"><h1>🚀 SyncFED Controllo</h1>
     <button class="primary" onclick="call('/api/step3/export-delta')">1. Export DELTA</button>
     <button class="ok" onclick="window.location.href='/dashboard'">2. Dashboard Vinted</button>
-    <button style="background:#ffcd4c" onclick="call('/api/test/google-key')">Test Google Key</button>
+    <button style="background:#ffcd4c; color:#000" onclick="call('/api/test/google-key')">Test Google Key</button>
+    <button class="test-ftp" onclick="call('/api/test/ftp-connection')">Test FTP Connection</button>
     <pre id="out">In attesa...</pre></div>
     <script>async function call(p){ const out=document.getElementById('out'); out.innerText='...'; const r=await fetch(p); const j=await r.json(); out.innerText=JSON.stringify(j,null,2); }</script>
   </body></html>`);
 });
 
 app.listen(PORT, () => {
+  console.log(`🚀 Porta ${PORT}`);
+});
   console.log(`🚀 Porta ${PORT}`);
 });
