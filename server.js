@@ -1,9 +1,9 @@
 /**
- * SyncFED – PRODUZIONE INTEGRATA DEFINITIVA (FIXED 530 ERROR)
- * - Export DELTA (Bman -> Sheet) con Delta Sync.
- * - Ottimizzazione Immagini: Forza .jpg e compressione < 300KB.
- * - Upload FTP: Invio a ftp.agriemporiodeanna.com/imgebay.
- * - Test FTP: Pulsante per verificare l'autenticazione.
+ * SyncFED – PRODUZIONE INTEGRATA DEFINITIVA (SOLO DRIVE)
+ * - Export DELTA (Bman -> Sheet) completo.
+ * - Ottimizzazione Immagini: Forza .jpg e compressione < 300KB via 'sharp'.
+ * - Upload da PC a DRIVE: Normalizza le foto e le salva su Google Drive.
+ * - Google Drive: Creazione automatica cartella "CODICE - TITOLO" e asset (Foto/TXT).
  */
 
 import "dotenv/config";
@@ -14,7 +14,6 @@ import xml2js from "xml2js";
 import { google } from "googleapis";
 import { Readable } from "stream";
 import sharp from "sharp"; 
-import * as ftp from "basic-ftp"; 
 
 const app = express();
 app.use(cors());
@@ -28,19 +27,11 @@ const PORT = process.env.PORT || 10000;
 const BMAN_ENDPOINT = "https://emporiodeanna.bman.it/bmanapi.asmx";
 const BMAN_CHIAVE = String(process.env.BMAN_API_KEY || "").trim();
 
-const FTP_CONFIG = {
-    host: "ftp.agriemporiodeanna.com", 
-    user: process.env.FTP_USER, 
-    password: process.env.FTP_PASS, 
-    secure: false
-};
-
-const BASE_URL_FOTO = "http://server.agriemporiodeanna.com/imgebay/";
 const SHEET_TAB = (process.env.GOOGLE_SHEET_TAB || "PRODOTTI_BMAN").trim();
 const SHEET_HEADERS = ["ID", "Codice", "Titolo", "Brand", "Tag15", "Script", "Descrizione_IT", "Titolo_FR", "Descrizione_FR", "Titolo_ES", "Descrizione_ES", "Titolo_DE", "Descrizione_DE", "Titolo_EN", "Descrizione_EN", "Categoria_Vinted", "Prezzo_Negozio", "Prezzo_Online", "Foto_1", "Foto_2", "Foto_3", "Foto_4", "Foto_5", "PRONTO_PER_VINTED", "UltimoSync"];
 
 /* =========================================================
-   HELPERS & OTTIMIZZAZIONE
+   HELPERS & OTTIMIZZAZIONE IMMAGINI
    ========================================================= */
 function normalizeValue(value) {
   if (!value) return "";
@@ -64,7 +55,7 @@ async function processAndCompressImage(buffer) {
 }
 
 /* =========================================================
-   GOOGLE & SOAP
+   GOOGLE & SOAP BMAN
    ========================================================= */
 async function getGoogleAuth() {
   return new google.auth.JWT(process.env.GOOGLE_CLIENT_EMAIL, null, process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"), [
@@ -116,6 +107,9 @@ async function getAllArticlesByScriptValues() {
   return Array.from(outByCodice.values());
 }
 
+/* =========================================================
+   DRIVE HELPERS
+   ========================================================= */
 async function ensureFolder(drive, folderName, parentId = null) {
   let query = `name = '${folderName.replace(/'/g, "\\'")}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
   if (parentId) query += ` and '${parentId}' in parents`;
@@ -137,18 +131,37 @@ app.get("/api/test/google-key", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
-app.get("/api/test/ftp-connection", async (req, res) => {
-  console.log(`Tentativo FTP con utente: ${FTP_CONFIG.user}`);
-  const client = new ftp.Client();
-  try {
-    await client.access(FTP_CONFIG);
-    const list = await client.list("/imgebay");
-    res.json({ ok: true, message: "Connessione FTP OK!", files: list.length });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: `Errore FTP: ${e.message}. Verifica User e Password.` });
-  } finally {
-    client.close();
-  }
+// 1. CARICAMENTO FOTO DA PC A GOOGLE DRIVE (OTTIMIZZATE)
+app.post("/api/vinted/upload-pc-to-drive", async (req, res) => {
+    const { codice, images } = req.body; 
+    if (!images || images.length < 5) return res.status(400).json({ ok: false, error: "Servono 5 foto." });
+    
+    try {
+        const { sheets, sheetId } = await getSheetsClient();
+        const drive = await getDriveClient();
+        
+        // Recupera info prodotto dallo Sheet per il nome cartella
+        const respSheet = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${SHEET_TAB}!A1:Z10000` });
+        const values = respSheet.data.values || [];
+        const header = values[0];
+        const row = values.slice(1).find(r => String(r[header.indexOf("Codice")]).trim() === codice);
+        const titolo = row ? row[header.indexOf("Titolo")] : "Prodotto Senza Titolo";
+
+        const rootId = await ensureFolder(drive, "DATI_VINTED");
+        const productFolderId = await ensureFolder(drive, `${codice} - ${titolo}`, rootId);
+
+        for (let i = 0; i < images.length; i++) {
+            const buffer = Buffer.from(images[i].split(",")[1], "base64");
+            const optimized = await processAndCompressImage(buffer);
+            await drive.files.create({ 
+                resource: { name: `${codice}_${i + 1}.jpg`, parents: [productFolderId] }, 
+                media: { mimeType: 'image/jpeg', body: optimized } 
+            });
+        }
+        res.json({ ok: true, message: "Foto caricate e ottimizzate su Google Drive!" });
+    } catch (e) {
+        res.status(500).json({ ok: false, error: e.message });
+    }
 });
 
 app.get("/api/step3/export-delta", async (req, res) => {
@@ -199,47 +212,6 @@ app.get("/api/vinted/list-approvati", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post("/api/vinted/upload-pc-to-bman", async (req, res) => {
-    const { codice, images } = req.body; 
-    const client = new ftp.Client();
-    try {
-        await client.access(FTP_CONFIG);
-        for (let i = 0; i < images.length; i++) {
-            const buffer = Buffer.from(images[i].split(",")[1], "base64");
-            const optimized = await processAndCompressImage(buffer);
-            await client.uploadFrom(Readable.from(optimized), `/imgebay/${codice}_${i + 1}.jpg`);
-        }
-        res.json({ ok: true });
-    } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-    finally { client.close(); }
-});
-
-app.get("/api/vinted/upload-to-drive", async (req, res) => {
-  try {
-    const codice = req.query.codice;
-    const { sheets, sheetId } = await getSheetsClient();
-    const drive = await getDriveClient();
-    const resp = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${SHEET_TAB}!A1:Z10000` });
-    const header = resp.data.values[0] || [];
-    const row = resp.data.values.slice(1).find(r => String(r[header.indexOf("Codice")]).trim() === codice);
-    const obj = {}; header.forEach((k, i) => obj[k] = row[i]);
-
-    const rootId = await ensureFolder(drive, "DATI_VINTED");
-    const productFolderId = await ensureFolder(drive, `${obj.Codice} - ${obj.Titolo}`, rootId);
-
-    for (let i = 1; i <= 5; i++) {
-        const url = obj[`Foto_${i}`];
-        if(!url) continue;
-        const response = await fetch(url);
-        const optimized = await processAndCompressImage(Buffer.from(await response.arrayBuffer()));
-        await drive.files.create({ resource: { name: `Foto_${i}.jpg`, parents: [productFolderId] }, media: { mimeType: 'image/jpeg', body: optimized } });
-    }
-    const txt = `CODICE: ${codice}\n\nIT: ${obj.Titolo}\n${obj.Descrizione_IT}\n\nFR: ${obj.Titolo_FR}\n${obj.Descrizione_FR}\n\nES: ${obj.Titolo_ES}\n${obj.Descrizione_ES}`;
-    await drive.files.create({ resource: { name: `${obj.Codice}.txt`, parents: [productFolderId] }, media: { mimeType: 'text/plain', body: Readable.from([txt]) } });
-    res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
 /* =========================================================
    UI
    ========================================================= */
@@ -263,7 +235,7 @@ app.get("/dashboard", (req, res) => {
     <script>
       let cur = "";
       async function load(){
-        document.getElementById('st').innerText = "⏳...";
+        document.getElementById('st').innerText = "⏳ Caricamento...";
         const r = await fetch('/api/vinted/list-approvati');
         const j = await r.json();
         document.getElementById('st').innerText = "✅";
@@ -273,26 +245,24 @@ app.get("/dashboard", (req, res) => {
             <td>\${a.descrizione || '---'}<span class="missing">\${a.missing.length?'Mancano: '+a.missing.join(', '):''}</span></td>
             <td>\${a.pronto==='TRUE'?'✅ PRONTO':'❌ NO'}</td>
             <td>
-              <button onclick="trig('\${a.codice}')" class="btn-upload">📸 Foto PC</button>
-              <button onclick="toD('\${a.codice}')" \${a.pronto==='TRUE'?'':'disabled'}>Drive</button>
+              <button onclick="trig('\${a.codice}')" class="btn-upload">📸 Carica Foto su Drive</button>
             </td>
           </tr>\`).join('');
       }
       function trig(c){ cur = c; document.getElementById('fIn').click(); }
       document.getElementById('fIn').onchange = async (e) => {
         const files = Array.from(e.target.files);
-        if(files.length < 5) return alert("Seleziona 5 foto.");
+        if(files.length < 5) return alert("Seleziona almeno 5 foto.");
         const imgs = await Promise.all(files.map(f => new Promise(res => {
           const rd = new FileReader(); rd.onload = () => res(rd.result); rd.readAsDataURL(f);
         })));
-        const res = await fetch('/api/vinted/upload-pc-to-bman', {
+        const res = await fetch('/api/vinted/upload-pc-to-drive', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({ codice: cur, images: imgs })
         });
         const j = await res.json();
-        alert(j.ok ? "✅ Caricate!" : "❌ " + j.error);
+        alert(j.ok ? "✅ Foto caricate su Google Drive!" : "❌ " + j.error);
       };
-      async function toD(c){ const r = await fetch('/api/vinted/upload-to-drive?codice='+c); const j = await r.json(); alert(j.ok ? '✅ Drive!' : '❌'); }
       load();
     </script></body></html>`);
 });
@@ -300,12 +270,11 @@ app.get("/dashboard", (req, res) => {
 app.get("/", (req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.send(`<!doctype html><html><head><meta charset="utf-8"/><title>SyncFED</title>
-  <style>body{font-family:Arial;padding:40px;background:#0b0f17;color:#fff}.card{background:#111a2b;padding:30px;border-radius:15px;border:1px solid #26324d}button{padding:15px 25px;border-radius:10px;border:0;cursor:pointer;font-weight:bold;margin:10px}.primary{background:#4c7dff;color:#fff}.ok{background:#1fda85;color:#000}.test-ftp{background:#ff5722;color:#fff}pre{background:#0b0f17;padding:20px;border:1px solid #26324d;margin-top:20px;border-radius:10px}</style></head>
-  <body><div class="card"><h1>🚀 SyncFED Controllo</h1>
+  <style>body{font-family:Arial;padding:40px;background:#0b0f17;color:#fff}.card{background:#111a2b;padding:30px;border-radius:15px;border:1px solid #26324d}button{padding:15px 25px;border-radius:10px;border:0;cursor:pointer;font-weight:bold;margin:10px}.primary{background:#4c7dff;color:#fff}.ok{background:#1fda85;color:#000}pre{background:#0b0f17;padding:20px;border:1px solid #26324d;margin-top:20px;border-radius:10px}</style></head>
+  <body><div class="card"><h1>🚀 SyncFED Controllo Operativo</h1>
     <button class="primary" onclick="call('/api/step3/export-delta')">1. Export DELTA</button>
-    <button class="ok" onclick="window.location.href='/dashboard'">2. Dashboard Vinted</button>
+    <button class="ok" onclick="window.location.href='/dashboard'">2. Vai alla Dashboard</button>
     <button style="background:#ffcd4c; color:#000" onclick="call('/api/test/google-key')">Test Google Key</button>
-    <button class="test-ftp" onclick="call('/api/test/ftp-connection')">Test FTP Connection</button>
     <pre id="out">In attesa...</pre></div>
     <script>async function call(p){ const out=document.getElementById('out'); out.innerText='...'; const r=await fetch(p); const j=await r.json(); out.innerText=JSON.stringify(j,null,2); }</script>
   </body></html>`);
