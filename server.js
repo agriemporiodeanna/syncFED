@@ -1,11 +1,10 @@
 /**
- * SyncFED – PRODUZIONE INTEGRATA DEFINITIVA
- * - Export DELTA (Bman -> Sheet) completo di logica Update/Insert.
- * - Ottimizzazione Immagini: Forza .jpg e compressione < 300KB via 'sharp'.
- * - Upload FTP: Invio a ftp.agriemporiodeanna.com nella cartella /imgebay/.
- * - Google Drive: Creazione cartelle "CODICE - TITOLO" e asset (Foto/TXT).
- * - Dashboard: UI Completa con caricamento foto da PC, Test Key e Export Delta.
- * - Test FTP: Nuovo pulsante per verificare la connessione al server.
+ * SyncFED – PRODUZIONE INTEGRATA DEFINITIVA (FIXED SYNTAX)
+ * - Export DELTA (Bman -> Sheet) con Delta Sync.
+ * - Ottimizzazione Immagini: Forza .jpg e compressione < 300KB.
+ * - Upload FTP: Invio a ftp.agriemporiodeanna.com/imgebay.
+ * - Google Drive: Creazione cartelle e salvataggio asset.
+ * - Test FTP: Pulsante per verificare la connessione al server.
  */
 
 import "dotenv/config";
@@ -42,7 +41,7 @@ const SHEET_TAB = (process.env.GOOGLE_SHEET_TAB || "PRODOTTI_BMAN").trim();
 const SHEET_HEADERS = ["ID", "Codice", "Titolo", "Brand", "Tag15", "Script", "Descrizione_IT", "Titolo_FR", "Descrizione_FR", "Titolo_ES", "Descrizione_ES", "Titolo_DE", "Descrizione_DE", "Titolo_EN", "Descrizione_EN", "Categoria_Vinted", "Prezzo_Negozio", "Prezzo_Online", "Foto_1", "Foto_2", "Foto_3", "Foto_4", "Foto_5", "PRONTO_PER_VINTED", "UltimoSync"];
 
 /* =========================================================
-   HELPERS & OTTIMIZZAZIONE IMMAGINI
+   HELPERS & OTTIMIZZAZIONE
    ========================================================= */
 function normalizeValue(value) {
   if (!value) return "";
@@ -66,7 +65,7 @@ async function processAndCompressImage(buffer) {
 }
 
 /* =========================================================
-   GOOGLE & SOAP BMAN
+   GOOGLE & SOAP
    ========================================================= */
 async function getGoogleAuth() {
   return new google.auth.JWT(process.env.GOOGLE_CLIENT_EMAIL, null, process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"), [
@@ -118,9 +117,6 @@ async function getAllArticlesByScriptValues() {
   return Array.from(outByCodice.values());
 }
 
-/* =========================================================
-   DRIVE HELPERS
-   ========================================================= */
 async function ensureFolder(drive, folderName, parentId = null) {
   let query = `name = '${folderName.replace(/'/g, "\\'")}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
   if (parentId) query += ` and '${parentId}' in parents`;
@@ -142,13 +138,12 @@ app.get("/api/test/google-key", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
-// NUOVA ROTTA: TEST FTP
 app.get("/api/test/ftp-connection", async (req, res) => {
   const client = new ftp.Client();
   try {
     await client.access(FTP_CONFIG);
     const list = await client.list("/imgebay");
-    res.json({ ok: true, message: "Connessione FTP OK!", folder: "/imgebay", filesCount: list.length });
+    res.json({ ok: true, message: "Connessione FTP OK!", filesInFolder: list.length });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   } finally {
@@ -183,7 +178,7 @@ app.get("/api/step3/export-delta", async (req, res) => {
     if (updates.length) await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: sheetId, requestBody: { valueInputOption: "RAW", data: updates } });
     if (inserts.length) await sheets.spreadsheets.values.append({ spreadsheetId: sheetId, range: `${SHEET_TAB}!A2`, valueInputOption: "RAW", requestBody: { values: inserts } });
     res.json({ ok: true, total: articoli.length, updated: updates.length, inserted: inserts.length });
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get("/api/vinted/list-approvati", async (req, res) => {
@@ -201,7 +196,7 @@ app.get("/api/vinted/list-approvati", async (req, res) => {
       return { codice: obj.Codice, descrizione: obj.Descrizione_IT, pronto: obj.PRONTO_PER_VINTED, missing, script: obj.Script };
     }).filter(x => normalizeValue(x.script) === "approvato");
     res.json({ ok: true, articoli: out });
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post("/api/vinted/upload-pc-to-bman", async (req, res) => {
@@ -244,7 +239,7 @@ app.get("/api/vinted/upload-to-drive", async (req, res) => {
     const txt = `CODICE: ${codice}\n\nIT: ${obj.Titolo}\n${obj.Descrizione_IT}\n\nFR: ${obj.Titolo_FR}\n${obj.Descrizione_FR}\n\nES: ${obj.Titolo_ES}\n${obj.Descrizione_ES}`;
     await drive.files.create({ resource: { name: `${obj.Codice}.txt`, parents: [productFolderId] }, media: { mimeType: 'text/plain', body: Readable.from([txt]) } });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 /* =========================================================
@@ -278,7 +273,7 @@ app.get("/dashboard", (req, res) => {
           <tr>
             <td><b>\${a.codice}</b></td>
             <td>\${a.descrizione || '---'}<span class="missing">\${a.missing.length?'Mancano: '+a.missing.join(', '):''}</span></td>
-            <td>\${a.pronto==='TRUE'?'✅ PRONTO':'❌ INCOMPLETO'}</td>
+            <td>\${a.pronto==='TRUE'?'✅ PRONTO':'❌ NO'}</td>
             <td>
               <button onclick="trig('\${a.codice}')" class="btn-upload">📸 Foto PC</button>
               <button onclick="toD('\${a.codice}')" \${a.pronto==='TRUE'?'':'disabled'}>Drive</button>
@@ -290,7 +285,7 @@ app.get("/dashboard", (req, res) => {
         const files = Array.from(e.target.files);
         if(files.length < 5) return alert("Seleziona 5 foto.");
         const imgs = await Promise.all(files.map(f => new Promise(res => {
-          const rd = new FileReader(); rd.onload = () => res(rd.result); rd.readAsDataURL(f);
+          const rd = new FileReader(); rd.onload = () => res(res(rd.result)); rd.readAsDataURL(f);
         })));
         const res = await fetch('/api/vinted/upload-pc-to-bman', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -319,7 +314,5 @@ app.get("/", (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Porta ${PORT}`);
-});
-  console.log(`🚀 Porta ${PORT}`);
+  console.log(`🚀 Server porta ${PORT}`);
 });
